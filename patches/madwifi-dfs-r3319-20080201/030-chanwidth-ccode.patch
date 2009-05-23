@@ -1,0 +1,171 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -10370,6 +10370,7 @@
+ 	ATH_RP_IGNORED 		= 24,
+ 	ATH_RADAR_IGNORED       = 25,
+ 	ATH_MAXVAPS  		= 26,
++	ATH_CWIDTH		= 27,
+ };
+ 
+ static int
+@@ -10551,6 +10552,32 @@
+ 			case ATH_RADAR_IGNORED:
+ 				sc->sc_radar_ignored = val;
+ 				break;
++			case ATH_CWIDTH:
++				// do not change half/quarter rates on upped device
++				if (sc->sc_dev->flags & (IFF_RUNNING|IFF_UP)) {
++					ret = -EBUSY;
++					break;
++				}
++				ath_hal_setvendor(sc->sc_ah, val);
++				sc->sc_chanwidth = val;
++				/* following code is the same, as countrycode change */
++				val = ath_countrycode;
++				/* fall-through ON PURPOSE! */
++			case ATH_COUNTRYCODE:
++				// do not change countrycode on upped device
++				if (sc->sc_dev->flags & (IFF_RUNNING|IFF_UP)) {
++					ret = -EBUSY;
++					break;
++				}
++				ath_countrycode = val;
++				if (ath_getchannels(sc->sc_dev, ath_countrycode,
++							ath_outdoor, ath_xchanmode)) {
++					ret = -EINVAL;
++					break;
++				}
++				sc->sc_ic.ic_country_code = ath_countrycode;
++				ieee80211_init_channels(&sc->sc_ic);
++				break;
+ 			default:
+ 				ret = -EINVAL;
+ 				break;
+@@ -10617,6 +10644,9 @@
+ 		case ATH_RADAR_IGNORED:
+ 			val = sc->sc_radar_ignored;
+ 			break;
++		case ATH_CWIDTH:
++			val = sc->sc_chanwidth;
++			break;
+ 		default:
+ 			ret = -EINVAL;
+ 			break;
+@@ -10666,7 +10696,7 @@
+ 	},
+ 	{ .ctl_name	= CTL_AUTO,
+ 	  .procname	= "countrycode",
+-	  .mode		= 0444,
++	  .mode		= 0644,
+ 	  .proc_handler	= ath_sysctl_halparam,
+ 	  .extra2	= (void *)ATH_COUNTRYCODE,
+ 	},
+@@ -10794,6 +10824,12 @@
+ 	  .proc_handler = ath_sysctl_halparam,
+ 	  .extra2	= (void *)ATH_RADAR_IGNORED,
+ 	},
++	{ .ctl_name     = CTL_AUTO,
++	  .procname     = "cwidth",
++	  .mode         = 0644,
++	  .proc_handler = ath_sysctl_halparam,
++	  .extra2	= (void *)ATH_CWIDTH,
++	},
+ 	{ 0 }
+ };
+ 
+Index: madwifi-dfs-r3319-20080201/ath/if_athvar.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_athvar.h
++++ madwifi-dfs-r3319-20080201/ath/if_athvar.h
+@@ -790,6 +790,7 @@
+ 	u_int32_t sc_dturbo_bw_turbo;		/* bandwidth threshold */
+ #endif
+ 	u_int sc_slottimeconf;			/* manual override for slottime */
++	int16_t sc_chanwidth;			/* Channel width. 0 - full, 1 - half, 2 - quarter */
+ 
+ 	struct timer_list sc_dfs_excl_timer;	/* mark expiration timer task */
+ 	struct timer_list sc_dfs_cac_timer;	/* dfs wait timer */
+Index: madwifi-dfs-r3319-20080201/ath_hal/ah_os.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath_hal/ah_os.c
++++ madwifi-dfs-r3319-20080201/ath_hal/ah_os.c
+@@ -573,6 +573,7 @@
+ EXPORT_SYMBOL(ath_hal_computetxtime);
+ EXPORT_SYMBOL(ath_hal_mhz2ieee);
+ EXPORT_SYMBOL(ath_hal_process_noisefloor);
++EXPORT_SYMBOL(ath_hal_setvendor);
+ 
+ static int __init
+ init_ath_hal(void)
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211.c
+@@ -244,23 +244,11 @@
+ };
+ 
+ int
+-ieee80211_ifattach(struct ieee80211com *ic)
++ieee80211_init_channels(struct ieee80211com *ic)
+ {
+-	struct net_device *dev = ic->ic_dev;
+ 	struct ieee80211_channel *c;
+-	struct ifmediareq imr;
+ 	int i;
+ 
+-	_MOD_INC_USE(THIS_MODULE, return -ENODEV);
+-
+-	/*
+-	 * Pick an initial operating mode until we have a vap
+-	 * created to lock it down correctly.  This is only
+-	 * drivers have something defined for configuring the
+-	 * hardware at startup.
+-	 */
+-	ic->ic_opmode = IEEE80211_M_STA;	/* everyone supports this */
+-
+ 	/*
+ 	 * Fill in 802.11 available channel set, mark
+ 	 * all available channels as active, and pick
+@@ -313,6 +301,28 @@
+ 	ic->ic_bsschan = IEEE80211_CHAN_ANYC;
+ 	/* Arbitrarily pick the first channel */
+ 	ic->ic_curchan = &ic->ic_channels[0];
++	return 0;
++}
++EXPORT_SYMBOL(ieee80211_init_channels);
++
++
++int
++ieee80211_ifattach(struct ieee80211com *ic)
++{
++	struct net_device *dev = ic->ic_dev;
++	struct ifmediareq imr;
++
++	_MOD_INC_USE(THIS_MODULE, return -ENODEV);
++
++	/*
++	 * Pick an initial operating mode until we have a vap
++	 * created to lock it down correctly.  This is only
++	 * drivers have something defined for configuring the
++	 * hardware at startup.
++	 */
++	ic->ic_opmode = IEEE80211_M_STA;	/* everyone supports this */
++
++	ieee80211_init_channels(ic);
+ 
+ 	/* Enable marking of dfs by default */
+ 	ic->ic_flags_ext |= IEEE80211_FEXT_MARKDFS;
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_var.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+@@ -665,6 +665,7 @@
+ /* flags to VAP create function */
+ #define IEEE80211_VAP_XR		0x10000	/* create a XR VAP without registering net device with OS */
+ 
++int ieee80211_init_channels(struct ieee80211com *);
+ int ieee80211_ifattach(struct ieee80211com *);
+ void ieee80211_ifdetach(struct ieee80211com *);
+ int ieee80211_vap_setup(struct ieee80211com *, struct net_device *,

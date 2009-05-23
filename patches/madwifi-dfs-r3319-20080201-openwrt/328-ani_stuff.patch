@@ -1,0 +1,16 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -6836,8 +6836,9 @@
+ 	dev->quota -= processed;
+ #endif
+ 
+-	/* rx signal state monitoring */
+-	ath_hal_rxmonitor(ah, &sc->sc_halstats, &sc->sc_curchan);
++	/* rx signal state monitoring, only necessary/applicable for sta mode */
++	if (sc->sc_opmode == HAL_M_STA)
++		ath_hal_rxmonitor(ah, &sc->sc_halstats, &sc->sc_curchan);
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,24)
+ 	return processed;
+ #else

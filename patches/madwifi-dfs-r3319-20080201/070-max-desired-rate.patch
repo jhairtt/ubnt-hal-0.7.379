@@ -1,0 +1,155 @@
+Index: madwifi-dfs-r3319-20080201/ath_rate/onoe/onoe.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath_rate/onoe/onoe.c
++++ madwifi-dfs-r3319-20080201/ath_rate/onoe/onoe.c
+@@ -337,6 +337,7 @@
+ ath_rate_ctl(void *arg, struct ieee80211_node *ni)
+ {
+ 	struct ath_softc *sc = arg;
++	struct ieee80211com *ic = &sc->sc_ic;
+ 	struct onoe_node *on = ATH_NODE_ONOE(ATH_NODE(ni));
+ 	struct ieee80211_rateset *rs = &ni->ni_rates;
+ 	int dir = 0, nrate, enough;
+@@ -362,6 +363,18 @@
+ 	    on->on_tx_retr < (on->on_tx_ok * ath_rate_raise) / 100)
+ 		dir = 1;
+ 
++	/* if max autorate specified and current rate is higher,
++	 * then force lowering rate
++	 */
++	if (ic->ic_max_des_rate > 0 &&
++	    ((rs->rs_rates[ni->ni_txrate] & IEEE80211_RATE_VAL) > ic->ic_max_des_rate)) {
++		DPRINTF(sc, "%s: Curr rate %d is higher then max allowed %d\n",
++				__func__,
++				(rs->rs_rates[ni->ni_txrate] & IEEE80211_RATE_VAL) / 2,
++				ic->ic_max_des_rate / 2);
++		dir = -1;
++	}
++
+ 	DPRINTF(sc, MAC_FMT ": ok %d err %d retr %d upper %d dir %d\n",
+ 		MAC_ADDR(ni->ni_macaddr),
+ 		on->on_tx_ok, on->on_tx_err, on->on_tx_retr,
+@@ -385,9 +398,17 @@
+ 		if (++on->on_tx_upper < ath_rate_raise_threshold)
+ 			break;
+ 		on->on_tx_upper = 0;
+-		if (nrate + 1 < rs->rs_nrates) {
++		if (nrate + 1 < rs->rs_nrates &&
++				(ic->ic_max_des_rate > 0 &&  ((rs->rs_rates[nrate] & IEEE80211_RATE_VAL) < ic->ic_max_des_rate)) ) {
+ 			nrate++;
+ 			sc->sc_stats.ast_rate_raise++;
++			DPRINTF(sc, "%s: Rate raise considered. Curr: %d, max: %d\n",
++				__func__, rs->rs_rates[nrate] / 2, ic->ic_max_des_rate / 2);
++		}
++		else if (ic->ic_max_des_rate > 0) {
++			DPRINTF(sc, "%s: not raising %d <= %d\n",
++				__func__, rs->rs_rates[nrate] / 2,
++				ic->ic_max_des_rate / 2);
+ 		}
+ 		break;
+ 	}
+Index: madwifi-dfs-r3319-20080201/ath_rate/sample/sample.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath_rate/sample/sample.c
++++ madwifi-dfs-r3319-20080201/ath_rate/sample/sample.c
+@@ -286,7 +286,7 @@
+  * or -1 if all the average_tx_times are 0.
+  */
+ static __inline int best_rate_ndx(struct sample_node *sn, int size_bin,
+-	int require_acked_before)
++	struct ieee80211com *ic, int require_acked_before)
+ {
+ 	unsigned int x;
+ 	unsigned int best_rate_tt = 0;
+@@ -298,6 +298,12 @@
+ 		    !sn->stats[size_bin][x].packets_acked))
+ 			continue;
+ 
++		/* max autorate evaluation */
++		if (ic->ic_max_des_rate > 0 &&
++				(sn->rates[x].rate > ic->ic_max_des_rate)) {
++			continue;
++		}
++
+ 		/* 9 megabits never works better than 12 */
+ 		if (sn->rates[x].rate == 18)
+ 			continue;
+@@ -318,7 +324,7 @@
+  * pick a good "random" bit-rate to sample other than the current one
+  */
+ static __inline int
+-pick_sample_ndx(struct sample_node *sn, int size_bin)
++pick_sample_ndx(struct sample_node *sn, int size_bin, struct ieee80211com *ic)
+ {
+ 	unsigned int x;
+ 	unsigned current_tt;
+@@ -339,6 +345,11 @@
+ 		if (ndx == current_ndx)
+ 			continue;
+ 
++		/* max autorate evaluation */
++		if (ic->ic_max_des_rate > 0 &&
++				(sn->rates[ndx].rate > ic->ic_max_des_rate))
++			continue;
++
+ 		/* this bit-rate is always worse than the current one */
+ 		if (sn->stats[size_bin][ndx].perfect_tx_time > current_tt)
+ 			continue;
+@@ -390,7 +401,7 @@
+ 
+ 	mrr = sc->sc_mrretry && !(ic->ic_flags & IEEE80211_F_USEPROT) && ENABLE_MRR;
+ 	size_bin = size_to_bin(frameLen);
+-	best_ndx = best_rate_ndx(sn, size_bin, !mrr);
++	best_ndx = best_rate_ndx(sn, size_bin, ic, !mrr);
+ 
+ 	if (best_ndx >= 0)
+ 		average_tx_time = sn->stats[size_bin][best_ndx].average_tx_time;
+@@ -409,7 +420,7 @@
+ 			 * of other bit-rates to ath_sample_rate% of the
+ 			 * total transmission time.
+ 			 */
+-			ndx = pick_sample_ndx(sn, size_bin);
++			ndx = pick_sample_ndx(sn, size_bin, ic);
+ 			if (ndx != sn->current_rate[size_bin])
+ 				sn->current_sample_ndx[size_bin] = ndx;
+ 			else
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_var.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+@@ -298,6 +298,7 @@
+ 	struct ieee80211_rateset ic_sup_xr_rates;
+ 	struct ieee80211_rateset ic_sup_half_rates;
+ 	struct ieee80211_rateset ic_sup_quarter_rates;
++	u_int16_t ic_max_des_rate;		/* max desired rate in autorate mode */
+ 	u_int16_t ic_modecaps;			/* set of mode capabilities */
+ 	u_int16_t ic_curmode;			/* current mode */
+ 	u_int16_t ic_lintval;			/* beacon interval */
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -355,13 +355,22 @@
+ 	ifr.ifr_media = vap->iv_media.ifm_cur->ifm_media &~ (IFM_MMASK|IFM_TMASK);
+ 	ifr.ifr_media |= mopts[vap->iv_des_mode];
+ 	if (rrq->fixed) {
++		ic->ic_max_des_rate = 0;
+ 		/* XXX fudge checking rates */
+ 		rate = ieee80211_rate2media(ic, 2 * rrq->value / 1000000,
+ 			vap->iv_des_mode);
+ 		if (rate == IFM_AUTO)		/* NB: unknown rate */
+ 			return -EINVAL;
+-	} else
++	} else {
+ 		rate = IFM_AUTO;
++		if (rrq->value == -1)
++			ic->ic_max_des_rate = 0;
++		else {
++			ic->ic_max_des_rate = 2 * rrq->value / 1000000;
++			if (ieee80211_rate2media(ic, ic->ic_max_des_rate, vap->iv_des_mode) == IFM_AUTO)
++				ic->ic_max_des_rate = 0;
++		}
++	}
+ 	ifr.ifr_media |= IFM_SUBTYPE(rate);
+ 
+ 	/* refresh media capabilities based on channel */

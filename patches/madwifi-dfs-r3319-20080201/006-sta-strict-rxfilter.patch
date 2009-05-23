@@ -1,0 +1,17 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -4065,9 +4065,9 @@
+ 		rfilt |= HAL_RX_FILTER_PROBEREQ;
+ 	if (ic->ic_opmode != IEEE80211_M_HOSTAP && (dev->flags & IFF_PROMISC))
+ 		rfilt |= HAL_RX_FILTER_PROM;
+-	if (ic->ic_opmode == IEEE80211_M_STA ||
+-	    sc->sc_opmode == HAL_M_IBSS ||	/* NB: AHDEMO too */
+-	    (sc->sc_nostabeacons) || sc->sc_scanning)
++	if ((ic->ic_opmode == IEEE80211_M_STA ||
++	    sc->sc_opmode == HAL_M_IBSS) &&	/* NB: AHDEMO too */
++	    (sc->sc_nostabeacons || sc->sc_scanning))
+ 		rfilt |= HAL_RX_FILTER_BEACON;
+ 	if (sc->sc_nmonvaps > 0)
+ 		rfilt |= (HAL_RX_FILTER_CONTROL | HAL_RX_FILTER_BEACON |

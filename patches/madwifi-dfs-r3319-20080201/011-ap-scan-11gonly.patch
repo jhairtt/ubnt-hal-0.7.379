@@ -1,0 +1,87 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_ap.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_scan_ap.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_ap.c
+@@ -124,8 +124,6 @@
+ 
+ static int ap_flush(struct ieee80211_scan_state *);
+ static void action_tasklet(IEEE80211_TQUEUE_ARG);
+-static struct ieee80211_channel *find11gchannel(struct ieee80211com *ic, 
+-		int i, int freq);
+ 
+ static const u_int chanflags[] = {
+ 	IEEE80211_CHAN_B,	/* IEEE80211_MODE_AUTO */
+@@ -221,15 +219,23 @@
+ 	modeflags = chanflags[mode];
+ 	for (i = 0; i < nfreq; i++) {
+ 		c = ieee80211_find_channel(ic, freq[i], modeflags);
+-		if ((c == NULL) || isclr(ic->ic_chan_active, c->ic_ieee))
+-			continue;
+-		if (mode == IEEE80211_MODE_AUTO) {
+-			/* XXX special-case 11b/g channels so we select
+-			 *     the g channel if both are present. */
+-			if (IEEE80211_IS_CHAN_B(c) &&
+-			    (cg = find11gchannel(ic, i, c->ic_freq)) != NULL)
++		/*
++		 * special-case 11b/g channels - if mode is Auto, allow upgrading to
++		 * g channel if b does not exist, or both b and g are present
++		 *
++		 * XXX: ineffective, but working
++		 */
++		if (mode == IEEE80211_MODE_AUTO && (c == NULL || IEEE80211_IS_CHAN_B(c))) {
++			cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_G);
++			if (cg == NULL) {
++				cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_PUREG);
++			}
++			if (cg != NULL)
+ 				c = cg;
+ 		}
++
++		if ((c == NULL) || isclr(ic->ic_chan_active, c->ic_ieee))
++			continue;
+ 		if (ss->ss_last >= IEEE80211_SCAN_MAX)
+ 			break;
+ 		ss->ss_chans[ss->ss_last++] = c;
+@@ -322,29 +328,6 @@
+ 		ieee80211_saveie(iep, ie);
+ }
+ 
+-/* This function must be invoked with locks acquired */
+-static struct ieee80211_channel *
+-find11gchannel(struct ieee80211com *ic, int i, int freq)
+-{
+-	struct ieee80211_channel *c;
+-	int j;
+-
+-	/* The normal ordering in the channel list is b channel
+-	 * immediately followed by g so optimize the search for
+-	 * this.  We'll still do a full search just in case. */
+-	for (j = i + 1; j < ic->ic_nchans; j++) {
+-		c = &ic->ic_channels[j];
+-		if ((c->ic_freq == freq) && IEEE80211_IS_CHAN_ANYG(c))
+-			return c;
+-	}
+-	for (j = 0; j < i; j++) {
+-		c = &ic->ic_channels[j];
+-		if ((c->ic_freq == freq) && IEEE80211_IS_CHAN_ANYG(c))
+-			return c;
+-	}
+-	return NULL;
+-}
+-
+ /*
+  * Start an ap scan by populating the channel list.
+  */
+@@ -416,9 +399,10 @@
+ 			continue;
+ 
+ 		/* Use any 11g channel instead of 11b one. */
+-		if (vap->iv_des_mode == IEEE80211_MODE_AUTO && 
++		if (vap->iv_des_mode == IEEE80211_MODE_AUTO &&
+ 		    IEEE80211_IS_CHAN_B(c) &&
+-		    find11gchannel(ic, i, c->ic_freq))
++		    (ieee80211_find_channel(ic, c->ic_freq, IEEE80211_CHAN_G) ||
++		     ieee80211_find_channel(ic, c->ic_freq, IEEE80211_CHAN_PUREG)))
+ 			continue;
+ 
+ 		/* Do not add channels already put into the scan list by the

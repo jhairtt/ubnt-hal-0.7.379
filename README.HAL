@@ -1,0 +1,169 @@
+
+WARNING: THIS IS BETA DISTRIBUTION.  THIS SOFTWARE MAY HAVE ISSUES AND
+WARNING: LIMITATIONS THAT WILL BE CORRECTED BEFORE A PRODUCTION RELEASE.
+WARNING: USE AT YOUR OWN RISK!
+
+Copyright
+=========
+Supplied HAL and patches are (c) Copyright by Ubiquiti Networks, Inc.
+Additional included patches are (c) Copyright by OpenWrt.org.
+
+Patches for MadWifi driver are licensed under the same license as MadWifi
+driver is -- GNU General Public License ("GPL") version 2 as published by
+the Free Software Foundation.
+
+Atheros HAL for Ubiquiti cards
+==============================
+  This is the attempt by Ubiquiti Networks Inc. to deliver alternative
+HAL for Ubiquiti Atheros based cards. HAL is binary compatible with the HAL
+coming along with MadWifi (www.madwifi.org) driver 
+(madwifi-dfs-r3319-20080201), but has some stability fixes and extra 
+features, which are frequently requested by customers:
+ - 5/10Mhz channel width (aka. half/quarter rate) support
+ - SR9/XR9 (900Mhz) support (5/10Mhz width for 907,912,917,922Mhz and 
+   20Mhz width for 912,917Mhz)
+ - proper Tx power reporting for Ubiquiti cards
+ - support other Frequency Freedom Ubiquiti cards (XR7,XR2.3,XR3,XR4)
+
+Installation
+============
+  The package contains:
+   - binary HALs for:
+	* x86 32-bit systems (i386-elf.hal.o.uu)
+	* Xscale big/little endian (xscale-be-elf.hal.o.uu and xscale-le-elf.hal.o.uu)
+	* MIPS2 big/little endian (mips-be-elf.hal.o.uu, mips-le-elf.hal.o.uu)
+	* MIPSISA32 big/little endian (mipsisa32-be-elf.hal.o.uu, mipsisa32-le-elf.hal.o.uu)
+	* PowerPC big/little endian (powerpc-be-eabi.hal.o.uu,  powerpc-be-eabi.hal.o.uu)
+   - minimal set of patches for MadWifi to get 'extra' features working
+
+  Installation is quite straightforward, however it requires certain skills 
+and knowledge of MadWifi build process.
+
+Sorry, but WE CANNOT PROVIDE SUPPORT FOR BUILDING AND USING MADWIFI -- 
+PLEASE FOLLOW MADWIFI DOCUMENTATION at www.madwifi.org. Thank you.
+
+This does not mean that we do not want your feedback - feedback is always 
+welcome, both positive and negative! (You know how to contact us, right? :)
+
+To build the driver for your host system, issue:
+	make
+in the main package directory. Kernel modules will be built in
+	src/madwifi-dfs-r3319-20080201
+insert and use the modules!
+
+Usage
+=====
+  Supplied MadWifi patches enable the following extra features:
+   - country code and/or channel width change without reloading driver module
+ 
+ Country code control
+ ---------------------
+ To change country code (manual country code change for special frequency cards
+SR9/XR9/XR7/XR2.3/XR2.8/XR3/XR3.6/SR4/SR4C is not needed any more):
+	ifconfig ath0 down
+	echo 840 > /proc/sys/dev/wifi0/countrycode
+	ifconfig ath0 up
+
+	
+ Channel Width control
+ ---------------------
+At the moment, current channel width implementation is limited to using
+one channel width at a time and reporting rates just as in Full rates mode.
+We are considering adapting HAL for real-rate reporting and multiple channel
+widths for future releases.
+
+To change channel width to 10Mhz:
+	ifconfig ath0 down
+	echo 0x156d0001 > /proc/sys/dev/wifi0/cwidth
+	ifconfig ath0 up
+
+To change channel width to 5Mhz:
+	ifconfig ath0 down
+	echo 0x156d0002 > /proc/sys/dev/wifi0/cwidth
+	ifconfig ath0 up
+
+To change back to 'normal' width:
+	ifconfig ath0 down
+	echo 0x156d0000 > /proc/sys/dev/wifi0/cwidth
+	ifconfig ath0 up
+
+NOTE: the interfaces described above MAY CHANGE in the future releases!
+
+ Dynamic ACK
+ ---------------------
+ACK timeout is a critical timing value for long distance links and is very
+frequently misconfigured. Dynamic ACK determination eases this task quite a bit.
+By default, this feature is disabled. To enable it, use:
+	echo 20 > /proc/sys/dev/wifi0/dynack_count
+When enabled, dynack engine is using current ACK value as a hint, and uses some
+converging algorithm to tune up the value to be more precise. Number 20 in the
+above example means that dynack shall evaluate statistics of the last 20 sent 
+packets. So you can choose different number of packets - just remember, the
+larger the number is, the slower ACK adjustment will be. To disable dynamic ACK
+evaluation, push 0 into dynack_count:
+	echo 0 > /proc/sys/dev/wifi0/dynack_count
+When engine decides that it has already converged into optimum value, it chooses
+to sleep - the number of seconds to sleep is specified in dynack_delay:
+	cat /proc/sys/dev/wifi0/dynack_delay
+will display current value. You can change it to whatever number of seconds
+you prefer, e.g. 1 minute:
+	echo 60 > /proc/sys/dev/wifi0/dynack_delay
+ 
+ MAC cloning
+ ---------------------
+This feature is used for a primitive single device transparent bridging - 
+the driver picks up the MAC address from the packets which are being 
+transmitted and clones it as radio MAC address. Useful ONLY for station mode.
+By default, the feature is disabled, you can enable it:
+  iwpriv ath0 macclone 1
+To disable:
+  iwpriv ath0 macclone 0
+Query current state:
+  iwpriv ath0 get_macclone
+
+ RX Rate reporting
+ ---------------------
+Rx Rate is the data rate of the last received data packet, use 
+  tools/80211stats -i ath0 -a
+utility to see it printed.
+
+ CCQ reporting
+ ---------------------
+CCQ (Client connection quality) is evaluated according to the current transfer
+data rate against maximum possible data rate, including some adjustments due
+to packet error rate. Use
+  tools/80211stats -i ath0 -a
+utility to see it printed.
+
+ Mikrotik IE
+ ---------------------
+Mikrotik IE carries some information, which is shown in Mikrotik's WinBox 
+utility. We are using it to send our hostname to be shown as "Radio Name"
+on WinBox. By default it is disabled. To enable it, issue command:
+  iwpriv ath0 addmtikie 1
+To disable:
+  iwpriv ath0 addmtikie 0
+Query current state:
+  iwpriv ath0 get_addmtikie
+Hostname value is taken from /proc/sys/kernel/hostname
+
+
+General NOTES about this release
+================================
+0) See Changelog for software related changes 
+
+1) HAL will not work for non-Ubiquiti cards, you will see message in dmesg:
+  unable to attach hardware: 'Hardware revision not supported' (HAL status 13)
+At the moment we are not considering removing this limitation.
+
+2) Most HAL tests are done on x86 platform. xscale-be (ixp425), mips-le (rb532a)
+have passed only basic client operations (HAL attaches, client mode card is 
+scanning, successfully associated and passed some traffic).
+We will extend different architecture testbases as time permits.
+
+3) We have switched to madwifi-dfs-r3319-20080201 and will NOT support 0.9.3.x
+driver series any more, as maintaining binary compatibility of two versions is
+really time consuming.
+
+4) HAL behaviour using multiple cards on a single host system has not been
+tested yet.

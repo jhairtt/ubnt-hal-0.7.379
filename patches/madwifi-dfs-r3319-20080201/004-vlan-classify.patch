@@ -1,0 +1,14 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_output.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_output.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_output.c
+@@ -209,7 +209,8 @@
+ 
+ 	/* reset the skb of new frames reaching this layer BEFORE
+ 	 * we invoke ieee80211_skb_track. */
+-	memset(SKB_CB(skb), 0, sizeof(struct ieee80211_cb));
++	memset((u_int8_t*)SKB_CB(skb) + sizeof(SKB_CB(skb)->vlan), 0,
++			sizeof(struct ieee80211_cb) - sizeof(SKB_CB(skb)->vlan));
+ 
+ 	/* If an skb is passed in directly from the kernel, 
+ 	 * we take responsibility for the reference */

@@ -1,0 +1,172 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -376,6 +376,9 @@
+ 		u_int32_t new_clamped_maxtxpower);
+ static u_int32_t ath_get_real_maxtxpower(struct ath_softc *sc);
+ 
++/* PER (Packet Error Rate) update */
++static void ath_update_per(struct ath_softc* sc, struct ath_node* an, struct ath_tx_status *ts);
++
+ /* calibrate every 30 secs in steady state but check every second at first. */
+ static int ath_calinterval = ATH_SHORT_CALINTERVAL;
+ static int ath_countrycode = CTRY_DEFAULT;	/* country code */
+@@ -8133,8 +8136,10 @@
+ 			 * and retry counts will be meaningless.
+ 			 */
+ 			if ((ts->ts_status & HAL_TXERR_FILT) == 0 &&
+-			    (bf->bf_flags & HAL_TXDESC_NOACK) == 0)
++			    (bf->bf_flags & HAL_TXDESC_NOACK) == 0) {
+ 				sc->sc_rc->ops->tx_complete(sc, an, bf);
++				ath_update_per(sc, an, ts);
++			}
+ 		}
+ 
+ 		bus_unmap_single(sc->sc_bdev, bf->bf_skbaddr,
+@@ -10949,6 +10954,47 @@
+ 	}
+ }
+ 
++static inline int
++ath_node_rate_idx(struct ath_softc* sc,
++                struct ath_node* an, int rate)
++{
++	u_int8_t txRate = sc->sc_hwmap[rate].ieeerate;
++	int i;
++
++	for (i = 0;  i < an->an_node.ni_rates.rs_nrates; i++) {
++		if ((an->an_node.ni_rates.rs_rates[i] & IEEE80211_RATE_VAL) == txRate) {
++			return i;
++		}
++	}
++	return (-1);
++}
++
++
++static void
++ath_update_per(struct ath_softc* sc, struct ath_node* an,
++		struct ath_tx_status *ts)
++{
++	struct ieee80211_node* ni = &an->an_node;
++	int txRateIdx = ath_node_rate_idx(sc, an, ts->ts_rate &~ HAL_TXSTAT_ALTRATE);
++	u_int32_t tmp_per = 0;
++	u_int8_t  retries = ts->ts_shortretry + ts->ts_longretry;
++
++	if (txRateIdx < 0)
++		return;
++
++	/**
++	 * calculate mean error rate value, of last sent packets.
++	 * I'm using last 16 packets for calculation efficiency
++	 * at first restore last 15 packets value
++	 **/
++	tmp_per = (ni->ni_rates.rs_per[txRateIdx] << 4) - ni->ni_rates.rs_per[txRateIdx];
++	// add current retries efficiency percent
++        tmp_per += ((retries * 100) / (retries + 1));
++        // calculate mean value
++        ni->ni_rates.rs_per[txRateIdx] = tmp_per >> 4;
++}
++
++
+ /*
+  * Announce various information on device/driver attach.
+  */
+Index: madwifi-dfs-r3319-20080201/net80211/_ieee80211.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/_ieee80211.h
++++ madwifi-dfs-r3319-20080201/net80211/_ieee80211.h
+@@ -303,6 +303,7 @@
+ struct ieee80211_rateset {
+ 	u_int8_t rs_nrates;
+ 	u_int8_t rs_rates[IEEE80211_RATE_MAXSIZE];
++	u_int8_t rs_per[IEEE80211_RATE_MAXSIZE]; /* Packet error rates */
+ };
+ 
+ struct ieee80211_roam {
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_ioctl.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+@@ -318,6 +318,7 @@
+ 	u_int8_t isi_nrates;		/* negotiated rates */
+ 	u_int8_t isi_rates[IEEE80211_RATE_MAXSIZE];
+ 	u_int8_t isi_txrate;		/* index to isi_rates[] */
++	u_int16_t isi_ccq;		/* client connection quality */
+ 	u_int16_t isi_ie_len;		/* IE length */
+ 	u_int16_t isi_associd;		/* assoc response */
+ 	u_int16_t isi_txpower;		/* current tx power */
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -4315,6 +4315,7 @@
+ 	struct ieee80211com *ic = vap->iv_ic;
+ 	struct ieee80211req_sta_info *si;
+ 	size_t ielen, len;
++	u_int32_t ccq = 0;
+ 	u_int8_t *cp;
+ 
+ 	if (vap != req->vap && vap != req->vap->iv_xrvap)	/* only entries for this vap (or) xrvap */
+@@ -4345,6 +4346,17 @@
+ 		si->isi_nrates = 15;
+ 	memcpy(si->isi_rates, ni->ni_rates.rs_rates, si->isi_nrates);
+ 	si->isi_txrate = ni->ni_txrate;
++
++	ccq = (10 * (100 - ni->ni_rates.rs_per[si->isi_txrate]));
++	if (vap->iv_fixed_rate == IEEE80211_FIXED_RATE_NONE) {
++		ccq *= (si->isi_rates[si->isi_txrate] & IEEE80211_RATE_VAL);
++		if (ic->ic_max_des_rate)
++			ccq /= ic->ic_max_des_rate;
++		else
++			ccq /= (si->isi_rates[si->isi_nrates - 1] & IEEE80211_RATE_VAL);
++	}
++	si->isi_ccq = ccq;
++
+ 	si->isi_ie_len = ielen;
+ 	si->isi_associd = ni->ni_associd;
+ 	si->isi_txpower = ni->ni_txpower;
+Index: madwifi-dfs-r3319-20080201/tools/80211stats.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/tools/80211stats.c
++++ madwifi-dfs-r3319-20080201/tools/80211stats.c
+@@ -163,7 +163,8 @@
+ static int s;
+ 
+ static void
+-print_sta_stats(FILE *fd, const u_int8_t macaddr[IEEE80211_ADDR_LEN])
++print_sta_stats(FILE *fd, const u_int8_t macaddr[IEEE80211_ADDR_LEN],
++		struct ieee80211req_sta_info *si)
+ {
+ #define	STAT(x,fmt) \
+ 	if (ns->ns_##x) { fprintf(fd, "%s" #x " " fmt, sep, ns->ns_##x); sep = " "; }
+@@ -183,6 +184,11 @@
+ 
+ 	fprintf(fd, "%s:\n", ether_ntoa((const struct ether_addr*) macaddr));
+ 
++	if (si)
++		fprintf(fd, "\tfreq %d  rssi %d  ccq %d  txrate %d\n",
++				si->isi_freq, si->isi_rssi, si->isi_ccq,
++				(si->isi_rates[si->isi_txrate] & 0x7F) / 2);
++
+ 	sep = "\t";
+ 	STAT(rx_data, "%u");
+ 	STAT(rx_mgmt, "%u");
+@@ -302,7 +308,7 @@
+ 			cp = buf;
+ 			do {
+ 				si = (struct ieee80211req_sta_info *) cp;
+-				print_sta_stats(stdout, si->isi_macaddr);
++				print_sta_stats(stdout, si->isi_macaddr, si);
+ 				cp += si->isi_len, len -= si->isi_len;
+ 			} while (len >= sizeof(struct ieee80211req_sta_info));
+ 		}
+@@ -313,7 +319,7 @@
+ 		for (c = optind; c < argc; c++) {
+ 			const struct ether_addr *ea = ether_aton(argv[c]);
+ 			if (ea != NULL)
+-				print_sta_stats(stdout, ea->ether_addr_octet);
++				print_sta_stats(stdout, ea->ether_addr_octet, NULL);
+ 		}
+ 	}
+ 	return 0;

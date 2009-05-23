@@ -1,0 +1,61 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_ap.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_scan_ap.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_ap.c
+@@ -213,32 +213,36 @@
+ {
+ 	struct ieee80211_channel *c, *cg;
+ 	u_int modeflags;
+-	int i;
++	int i, j;
++	static u_int subflags[] = {
++		0, IEEE80211_CHAN_HALF, IEEE80211_CHAN_QUARTER };
+ 
+ 	KASSERT(mode < ARRAY_SIZE(chanflags), ("Unexpected mode %u", mode));
+ 	modeflags = chanflags[mode];
+ 	for (i = 0; i < nfreq; i++) {
+-		c = ieee80211_find_channel(ic, freq[i], modeflags);
+-		/*
+-		 * special-case 11b/g channels - if mode is Auto, allow upgrading to
+-		 * g channel if b does not exist, or both b and g are present
+-		 *
+-		 * XXX: ineffective, but working
+-		 */
+-		if (mode == IEEE80211_MODE_AUTO && (c == NULL || IEEE80211_IS_CHAN_B(c))) {
+-			cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_G);
+-			if (cg == NULL) {
+-				cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_PUREG);
++		for (j = 0; j < ARRAY_SIZE(subflags); ++j) {
++			c = ieee80211_find_channel(ic, freq[i], modeflags | subflags[j]);
++			/*
++			 * special-case 11b/g channels - if mode is Auto, allow upgrading to
++			 * g channel if b does not exist, or both b and g are present
++			 *
++			 * XXX: ineffective, but working
++			 */
++			if (mode == IEEE80211_MODE_AUTO && (c == NULL || IEEE80211_IS_CHAN_B(c))) {
++				cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_G | subflags[j]);
++				if (cg == NULL) {
++					cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_PUREG | subflags[j]);
++				}
++				if (cg != NULL)
++					c = cg;
+ 			}
+-			if (cg != NULL)
+-				c = cg;
+-		}
+ 
+-		if ((c == NULL) || isclr(ic->ic_chan_active, c->ic_ieee))
+-			continue;
+-		if (ss->ss_last >= IEEE80211_SCAN_MAX)
+-			break;
+-		ss->ss_chans[ss->ss_last++] = c;
++			if (c == NULL || isclr(ic->ic_chan_active, c->ic_ieee))
++				continue;
++			if (ss->ss_last >= IEEE80211_SCAN_MAX)
++				break;
++			ss->ss_chans[ss->ss_last++] = c;
++		}
+ 	}
+ }
+ 

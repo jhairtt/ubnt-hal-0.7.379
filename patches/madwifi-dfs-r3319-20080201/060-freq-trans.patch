@@ -1,0 +1,191 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -227,6 +227,7 @@
+ static void ath_set_channel(struct ieee80211com *);
+ static void ath_set_coverageclass(struct ieee80211com *);
+ static u_int ath_mhz2ieee(struct ieee80211com *, u_int, u_int);
++static u_int ath_map_frequency(struct ieee80211com *, u_int, u_int);
+ #ifdef ATH_SUPERG_FF
+ static int athff_can_aggregate(struct ath_softc *, struct ether_header *,
+ 	struct ath_node *, struct sk_buff *, u_int16_t, int *);
+@@ -1088,6 +1089,7 @@
+ 
+ 	ic->ic_set_coverageclass = ath_set_coverageclass;
+ 	ic->ic_mhz2ieee = ath_mhz2ieee;
++	ic->ic_map_frequency = ath_map_frequency;
+ 
+ 	/* DFS radar avoidance channel availability check time (in seconds) */
+ 	ic->ic_set_dfs_channel_availability_check_time = ath_set_dfs_channel_availability_check_time;
+@@ -8855,6 +8857,14 @@
+ 	return (ath_hal_mhz2ieee(sc->sc_ah, freq, flags));
+ }
+ 
++static u_int
++ath_map_frequency(struct ieee80211com *ic, u_int dir, u_int freq)
++{
++	struct ath_softc *sc = ic->ic_dev->priv;
++
++	return ath_hal_map_frequency(sc->sc_ah, dir, freq);
++}
++
+ 
+ /*
+  * Context: softIRQ and process context
+Index: madwifi-dfs-r3319-20080201/ath_hal/ah_os.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath_hal/ah_os.c
++++ madwifi-dfs-r3319-20080201/ath_hal/ah_os.c
+@@ -573,6 +573,7 @@
+ EXPORT_SYMBOL(ath_hal_computetxtime);
+ EXPORT_SYMBOL(ath_hal_mhz2ieee);
+ EXPORT_SYMBOL(ath_hal_process_noisefloor);
++EXPORT_SYMBOL(ath_hal_map_frequency);
+ EXPORT_SYMBOL(ath_hal_setvendor);
+ EXPORT_SYMBOL(ath_hal_setlicense);
+ 
+Index: madwifi-dfs-r3319-20080201/hal/ah.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/hal/ah.h
++++ madwifi-dfs-r3319-20080201/hal/ah.h
+@@ -931,6 +931,13 @@
+ extern	int __ahdecl ath_hal_mhz2ieee(struct ath_hal *, u_int mhz, u_int flags);
+ 
+ /*
++ * Convert operating frequency to the real one and vice versa
++ * (for Ubiquiti Frequency Freedom cards) - passthrough for regular cards
++ */
++extern u_int __ahdecl ath_hal_map_frequency(struct ath_hal *,
++		u_int direction, u_int mhz);
++
++/*
+  * Return a version string for the HAL release.
+  */
+ extern	char ath_hal_version[];
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_var.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+@@ -495,6 +495,8 @@
+ 	/* MHz to IEEE channel conversion */
+ 	u_int (*ic_mhz2ieee)(struct ieee80211com *, u_int, u_int);
+ 
++	u_int (*ic_map_frequency)(struct ieee80211com *, u_int, u_int);
++
+ #ifdef ATH_REVERSE_ENGINEERING
+ 	/* debug and reverse engineering hooks */
+ 	void (*ic_registers_dump)(struct ieee80211com *);
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -677,14 +677,30 @@
+ 
+ 	if (freq->e > 1)
+ 		return -EINVAL;
+-	if (freq->e == 1)
+-		i = (ic->ic_mhz2ieee)(ic, freq->m / 100000, 0);
+-	else
++
++	/* wireless tools suggest using 1000 as a separator between
++	 * channels and frequencies  */
++	if (freq->e == 0 && freq->m < 1000) {
++		/* this is channel */
+ 		i = freq->m;
++	} else {
++		/* this is frequency - get MHz out of it */
++		if (freq->e == 1) {
++			i = freq->m / 100000;
++		} else {
++			if (freq->m >= 1000000)
++				i = freq->m / 1000000;
++			else
++				return -EINVAL;
++		}
++		i = ic->ic_map_frequency(ic, 1, i);
++		i = (ic->ic_mhz2ieee)(ic, i, 0);
++	}
+ 
+ 	if ((i != 0) && (i != -1)) {
+ 		if (i > IEEE80211_CHAN_MAX)
+ 			return -EINVAL;
++
+ 		c = findchannel(ic, i, vap->iv_des_mode);
+ 		if (c == NULL) {
+ 			c = findchannel(ic, i, IEEE80211_MODE_AUTO);
+@@ -805,6 +821,7 @@
+ 		freq->m = vap->iv_des_chan->ic_freq;
+ 	else
+ 		freq->m = 0;
++	freq->m = ic->ic_map_frequency(ic, 0, freq->m);
+ 	freq->m *= 100000;
+ 	freq->e = 1;
+ 
+@@ -959,7 +976,7 @@
+ 			setbit(reported, c->ic_ieee);
+ 			range->freq[range->num_frequency].i = c->ic_ieee;
+ 			range->freq[range->num_frequency].m =
+-				ic->ic_channels[i].ic_freq * 100000;
++				ic->ic_map_frequency(ic, 0, ic->ic_channels[i].ic_freq) * 100000;
+ 			range->freq[range->num_frequency].e = 1;
+ 			if (++range->num_frequency == IW_MAX_FREQUENCIES)
+ 				break;
+@@ -1805,7 +1822,7 @@
+ 	memset(&iwe, 0, sizeof(iwe));
+ 	last_ev = current_ev;
+ 	iwe.cmd = SIOCGIWFREQ;
+-	iwe.u.freq.m = se->se_chan->ic_freq * 100000;
++	iwe.u.freq.m = vap->iv_ic->ic_map_frequency(vap->iv_ic, 0, se->se_chan->ic_freq) * 100000;
+ 	iwe.u.freq.e = 1;
+ 	current_ev = iwe_stream_add_event(current_ev,
+ 		end_buf, &iwe, IW_EV_FREQ_LEN);
+@@ -3904,6 +3921,8 @@
+ 				c = c1;
+ 			/* Copy the entire structure, whereas it used to just copy a few fields */
+ 			memcpy(&chans.ic_chans[chans.ic_nchans], c, sizeof(struct ieee80211_channel));
++			chans.ic_chans[chans.ic_nchans].ic_freq =
++				ic->ic_map_frequency(ic, 0, c->ic_freq);
+ 			if (++chans.ic_nchans >= IEEE80211_CHAN_MAX)
+ 				break;
+ 		}
+@@ -4189,6 +4208,22 @@
+ 	return 0;
+ }
+ 
++static void
++map_frequencies(struct ieee80211com *ic, struct scanreq *req)
++{
++	struct ieee80211req_scan_result *sr;
++	int len;
++
++	len = req->space;
++	sr = req->sr;
++	while (len >= sizeof(struct ieee80211req_scan_result)) {
++		sr->isr_freq = ic->ic_map_frequency(ic, 0, sr->isr_freq);
++		len -= sr->isr_len;
++		sr = (struct ieee80211req_scan_result*)
++			((char*)sr + sr->isr_len);
++	}
++}
++
+ static int
+ ieee80211_ioctl_getscanresults(struct net_device *dev, struct iwreq *iwr)
+ {
+@@ -4215,6 +4250,7 @@
+ 			return -ENOMEM;
+ 		req.sr = p;
+ 		ieee80211_scan_iterate(ic, get_scan_result, &req);
++		map_frequencies(ic, &req);
+ 		iwr->u.data.length = space - req.space;
+ 		error = copy_to_user(iwr->u.data.pointer, p, iwr->u.data.length);
+ 		FREE(p, M_TEMP);
+@@ -4286,7 +4322,7 @@
+ 	si = req->si;
+ 	si->isi_len = len;
+ 	si->isi_ie_len = ielen;
+-	si->isi_freq = ni->ni_chan->ic_freq;
++	si->isi_freq = ic->ic_map_frequency(ic, 0, ni->ni_chan->ic_freq);
+ 	si->isi_flags = ni->ni_chan->ic_flags;
+ 	si->isi_state = ni->ni_flags;
+ 	si->isi_authmode = ni->ni_authmode;

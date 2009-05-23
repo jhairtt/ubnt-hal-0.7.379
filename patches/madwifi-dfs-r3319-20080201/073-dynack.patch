@@ -1,0 +1,568 @@
+Index: madwifi-dfs-r3319-20080201/ath/Makefile
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/Makefile
++++ madwifi-dfs-r3319-20080201/ath/Makefile
+@@ -60,7 +60,7 @@
+ include $(TOP)/Makefile.inc
+ 
+ obj-m		+= ath_$(BUSNAME).o
+-ath_$(BUSNAME)-objs	:= if_ath.o if_ath_radar.o if_ath_$(BUSNAME).o
++ath_$(BUSNAME)-objs	:= if_ath.o if_ath_radar.o if_ath_dynack.o if_ath_$(BUSNAME).o
+ 
+ INCS += -I$(TOP) -I$(ATH_HAL) -I$(HAL) -I$(WLAN)
+ 
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -868,6 +868,9 @@
+ 	ic->ic_wme.wme_update = ath_wme_update;
+ 	ic->ic_uapsd_flush = ath_uapsd_flush;
+ 
++	sc->sc_dynack.da_delay_period = 600; /* 10 minutes to stay on good ack */
++	sc->sc_dynack.da_max_ack = 0; /* 0 - check whether ack reached max */
++
+ 	/* XXX not right but it's not used anywhere important */
+ 	ic->ic_phytype = IEEE80211_T_OFDM;
+ 	ic->ic_opmode = IEEE80211_M_STA;
+@@ -8150,6 +8153,8 @@
+ 		ni = bf->bf_node;
+ 		if (ni != NULL) {
+ 			an = ATH_NODE(ni);
++			if ( (bf->bf_flags & HAL_TXDESC_NOACK) == 0)
++				ath_dynack_update(sc, ts);
+ 			if (ts->ts_status == 0) {
+ 				u_int8_t txant = ts->ts_antenna;
+ 				sc->sc_stats.ast_ant_tx[txant]++;
+@@ -9051,6 +9056,8 @@
+ 			 ni->ni_capinfo,
+ 			 ieee80211_chan2ieee(ic, ni->ni_chan));
+ 
++		ath_dynack_init(sc);
++
+ 		switch (vap->iv_opmode) {
+ 		case IEEE80211_M_HOSTAP:
+ 		case IEEE80211_M_IBSS:
+@@ -10473,6 +10480,9 @@
+ 	ATH_RADAR_IGNORED       = 25,
+ 	ATH_MAXVAPS  		= 26,
+ 	ATH_CWIDTH		= 27,
++	ATH_DYNACK_COUNT	= 28,
++	ATH_DYNACK_DELAY	= 29,
++	ATH_DYNACK_MAX_ACK	= 30,
+ };
+ 
+ static int
+@@ -10680,6 +10690,18 @@
+ 				sc->sc_ic.ic_country_code = ath_countrycode;
+ 				ieee80211_init_channels(&sc->sc_ic);
+ 				break;
++			case ATH_DYNACK_COUNT:
++				sc->sc_dynack.da_checkcount = val;
++				break;
++			case ATH_DYNACK_DELAY:
++				sc->sc_dynack.da_delay_period = val;
++				break;
++			case ATH_DYNACK_MAX_ACK:
++				if ((val == 0) || (val >= 100))
++					sc->sc_dynack.da_max_ack = val;
++				else
++					return -EINVAL;
++				break;
+ 			default:
+ 				ret = -EINVAL;
+ 				break;
+@@ -10749,6 +10771,15 @@
+ 		case ATH_CWIDTH:
+ 			val = sc->sc_chanwidth;
+ 			break;
++		case ATH_DYNACK_COUNT:
++			val = sc->sc_dynack.da_checkcount;
++			break;
++		case ATH_DYNACK_DELAY:
++			val = sc->sc_dynack.da_delay_period;
++			break;
++		case ATH_DYNACK_MAX_ACK:
++			val = sc->sc_dynack.da_max_ack;
++			break;
+ 		default:
+ 			ret = -EINVAL;
+ 			break;
+@@ -10932,6 +10963,25 @@
+ 	  .proc_handler = ath_sysctl_halparam,
+ 	  .extra2	= (void *)ATH_CWIDTH,
+ 	},
++	{ .ctl_name	= CTL_AUTO,
++	  .procname	= "dynack_count",
++	  .mode		= 0644,
++	  .proc_handler	= ath_sysctl_halparam,
++	  .extra2	= (void *)ATH_DYNACK_COUNT,
++	},
++	{ .ctl_name	= CTL_AUTO,
++	  .procname	= "dynack_delay",
++	  .mode		= 0644,
++	  .proc_handler	= ath_sysctl_halparam,
++	  .extra2	= (void *)ATH_DYNACK_DELAY,
++	},
++	{ .ctl_name	= CTL_AUTO,
++	  .procname	= "dynack_maxack",
++	  .mode		= 0644,
++	  .proc_handler	= ath_sysctl_halparam,
++	  .extra2	= (void *)ATH_DYNACK_MAX_ACK,
++	},
++
+ 	{ 0 }
+ };
+ 
+Index: madwifi-dfs-r3319-20080201/ath/if_ath_dynack.c
+===================================================================
+--- /dev/null
++++ madwifi-dfs-r3319-20080201/ath/if_ath_dynack.c
+@@ -0,0 +1,354 @@
++/*-
++ * Copyright (c) 2008 Ubiquiti Networks, Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
++ *    similar to the "NO WARRANTY" disclaimer below ("Disclaimer") and any
++ *    redistribution must be conditioned upon including a substantially
++ *    similar Disclaimer requirement for further binary redistribution.
++ * 3. Neither the names of the above-listed copyright holders nor the names
++ *    of any contributors may be used to endorse or promote products derived
++ *    from this software without specific prior written permission.
++ *
++ * Alternatively, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2 as published by the Free
++ * Software Foundation.
++ *
++ * NO WARRANTY
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF NONINFRINGEMENT, MERCHANTIBILITY
++ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
++ * THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY,
++ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
++ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGES.
++ */
++#include "opt_ah.h"
++
++#ifndef AUTOCONF_INCLUDED
++#include <linux/config.h>
++#endif
++#include <linux/version.h>
++#include <linux/netdevice.h>
++
++#include "if_ethersubr.h"               /* for ETHER_IS_MULTICAST */
++#include "if_media.h"
++#include "if_llc.h"
++
++#include <net80211/if_athproto.h>
++#include <net80211/ieee80211_var.h>
++#include "if_athvar.h"
++
++#include "ah.h"
++#include "if_ath_hal.h"
++
++#include "if_ath_dynack.h"
++
++#define DPRINTF(sc, _m, _fmt, ...) do {                         \
++        if (sc->sc_debug & (_m))                                \
++                printk(_fmt, __VA_ARGS__);                      \
++} while (0)
++
++/* TODO: not a proper way to declare it here... */
++#define ATH_DEBUG_DYNACK	 0x02000000
++
++inline static u_int
++ath_dynack_get_ack(struct ath_softc *sc)
++{
++	return ath_hal_getacktimeout(sc->sc_ah);
++}
++
++inline static void
++ath_dynack_set_ack(struct ath_softc *sc, int val)
++{
++	struct ath_hal *ah = sc->sc_ah;
++	ath_hal_setacktimeout(ah, val);
++	ath_hal_setctstimeout(ah, val);
++	ath_hal_setslottime(ah, ((val - 3) / 2));
++}
++
++static int
++ath_dynack_changetimeout(struct ath_softc *sc, int step)
++{
++	int rv = 0;
++	int val = ath_dynack_get_ack(sc) + step;
++
++	/* check limits */
++	if (val < 19) {
++		val = 19;
++		rv = -1;
++	} else {
++		if (sc->sc_dynack.da_max_ack == 0) {
++			/**
++			 * this means that all supported range is allowed
++			 * and driver should check if it has reached max supported value
++			 **/
++			int tmp;
++			ath_dynack_set_ack(sc, val);
++			tmp = ath_dynack_get_ack(sc);
++			if (tmp != val) {
++				val = tmp;
++				rv = 1;
++			}
++		} else if (val > sc->sc_dynack.da_max_ack) {
++			val = sc->sc_dynack.da_max_ack;
++			rv = 1;
++		}
++	}
++
++	ath_dynack_set_ack(sc, val);
++	DPRINTF(sc, ATH_DEBUG_DYNACK, "%s: setting ack timeout %d (step %d)\n",
++			__func__, val, step);
++
++	return rv;
++}
++
++static void
++ath_dynack_suspend(struct ath_softc *sc)
++{
++	/* do some delay to prevent flickering */
++	DPRINTF(sc, ATH_DEBUG_DYNACK,
++			"%s: delaying for %d secs\n", __func__, sc->sc_dynack.da_delay_period);
++	sc->sc_dynack.da_step = 0;
++	sc->sc_dynack.da_prevaction = 0;
++	sc->sc_dynack.da_delay = 1;
++	memset(&sc->sc_dynack.da_stats, 0, sizeof(sc->sc_dynack.da_stats));
++}
++
++
++/* memzero all, but just remember some values */
++void
++ath_dynack_init(struct ath_softc *sc)
++{
++
++	int dp = sc->sc_dynack.da_delay_period;
++	int ma = sc->sc_dynack.da_max_ack;
++	int cc = sc->sc_dynack.da_checkcount;
++
++	memset(&sc->sc_dynack, 0, sizeof(sc->sc_dynack));
++	sc->sc_dynack.da_step = 16;             /* initial step in ack iterations */
++
++	sc->sc_dynack.da_delay_period = dp;
++	sc->sc_dynack.da_max_ack = ma;
++	sc->sc_dynack.da_checkcount = cc;
++}
++
++static void
++ath_dynack_packet_vote(struct ath_softc *sc, struct ath_tx_status *txstat)
++{
++	int retries = txstat->ts_shortretry + txstat->ts_longretry;
++	sc->sc_dynack.da_packet_count++;
++	if (txstat->ts_status == 0) {
++		switch (retries) {
++		case 0:
++			sc->sc_dynack.da_dec += 2;
++			break;
++		case 1:
++		case 2:
++			sc->sc_dynack.da_stay += (3 - retries);
++			break;
++		case 3:
++		default:
++			sc->sc_dynack.da_inc += retries - 2;
++			break;
++		}
++	} else if (txstat->ts_status == HAL_TXERR_XRETRY) {
++		sc->sc_dynack.da_inc += retries;
++	} else {
++		DPRINTF(sc, ATH_DEBUG_DYNACK, "%s: txstat->ts_status = 0x%08x\n",
++				__func__, txstat->ts_status);
++	}
++
++#if 0
++	if (retries) {
++		DPRINTF(sc, ATH_DEBUG_DYNACK, "%s: [ er:%d, sr:%d, lr:%d, vc:%d, rt:0x%02x(%d), rssi:%d, %d@%d ]\n",
++				__func__,
++				txstat->ts_status,
++				txstat->ts_shortretry,
++				txstat->ts_longretry,
++				txstat->ts_virtcol,
++				txstat->ts_rate,
++				sc->sc_hwmap[txstat->ts_rate &~ HAL_TXSTAT_ALTRATE].ieeerate,
++				txstat->ts_rssi,
++				txstat->ts_seqnum,
++				txstat->ts_tstamp);
++	}
++#endif
++}
++
++static unsigned int
++ath_dynack_stats_best_ack(struct ath_softc *sc)
++{
++	unsigned int  min_ack = ath_dynack_get_ack(sc);
++	unsigned long min_txtime = 0xffffffff;
++	unsigned long tmp_txtime;
++	int i;
++
++	/* dump stats */
++	if (sc->sc_debug & ATH_DEBUG_DYNACK) {
++		printk("%s().Retries: ", __func__);
++		for (i = 0;  i < sc->sc_dynack.da_stats.ds_idx; ++i)
++			printk("%4d", sc->sc_dynack.da_stats.ds_retries[i]);
++		printk("\n%s().ACK:     ", __func__);
++		for (i = 0;  i < sc->sc_dynack.da_stats.ds_idx; ++i)
++			printk("%4d", sc->sc_dynack.da_stats.ds_ack[i]);
++		printk("\n");
++	}
++
++	/* now select best ack */
++	for (i = 0;  i < sc->sc_dynack.da_stats.ds_idx; ++i) {
++		tmp_txtime = sc->sc_dynack.da_stats.ds_retries[i] * sc->sc_dynack.da_stats.ds_ack[i];
++		if (min_txtime > tmp_txtime) {
++			min_txtime = tmp_txtime;
++			min_ack = sc->sc_dynack.da_stats.ds_ack[i];
++		}
++	}
++	DPRINTF(sc, ATH_DEBUG_DYNACK, "%s: using statistics found optimal ack: %d\n",
++			__func__, min_ack);
++	return min_ack;
++}
++
++/* TODO: audit & split */
++void
++ath_dynack_update(struct ath_softc *sc, struct ath_tx_status *txstat)
++{
++	if (sc->sc_dynack.da_checkcount == 0)
++		return;
++
++	ath_dynack_packet_vote(sc, txstat);
++
++	/* calculate votes */
++	if (sc->sc_dynack.da_packet_count >= sc->sc_dynack.da_checkcount) {
++		int diff;
++		int direction = 0;
++		int value = 0;
++		int allow_action = 1;
++
++#if 0
++		DPRINTF(sc, ATH_DEBUG_DYNACK, "%s: UP: %3d,  down: %3d,  stay: %3d\n",
++			__func__, sc->sc_dynack.da_inc,
++			sc->sc_dynack.da_dec, sc->sc_dynack.da_stay);
++#endif
++
++		if (sc->sc_dynack.da_inc > sc->sc_dynack.da_dec) {
++			diff = sc->sc_dynack.da_inc - sc->sc_dynack.da_dec;
++			direction = 1;
++			value = sc->sc_dynack.da_inc;
++		} else {
++			diff = sc->sc_dynack.da_dec - sc->sc_dynack.da_inc;
++			direction = -1;
++			value = sc->sc_dynack.da_dec;
++		}
++
++		if (sc->sc_dynack.da_delay) {
++			long tmp = jiffies - sc->sc_dynack.da_lasttime;
++			if ( (tmp < 0) || (tmp > (HZ * sc->sc_dynack.da_delay_period))) {
++				allow_action = 1;
++				sc->sc_dynack.da_delay = 0;
++				sc->sc_dynack.da_step = 8;
++			} else
++				allow_action = 0;
++		}
++
++
++		/* we are not suspended, right ? */
++		if (allow_action) {
++			sc->sc_dynack.da_lasttime = jiffies;
++			/* check if we have enough votes */
++			if (diff > sc->sc_dynack.da_stay) {
++
++				/**
++				 * if we have many steps in same direction - then increase step size.
++				 * if direction changes - decrease step size
++				 **/
++				if (direction == sc->sc_dynack.da_prevaction) {
++					if (direction) {
++						sc->sc_dynack.da_sameaction++;
++						if ( (sc->sc_dynack.da_sameaction >= 4) && (sc->sc_dynack.da_step < 32) ) {
++							sc->sc_dynack.da_step *= 2;
++							sc->sc_dynack.da_sameaction = 0;
++						}
++					}
++				} else {
++					if (direction && sc->sc_dynack.da_prevaction)
++						sc->sc_dynack.da_step = sc->sc_dynack.da_step / 2;
++					sc->sc_dynack.da_sameaction = 0;
++				}
++
++				if (sc->sc_dynack.da_step)      {
++					int err = 0;
++					int idx;
++					int tmp = 0;
++					/* seems like everyone is waiting for a change */
++					sc->sc_dynack.da_prevaction = direction;
++
++					/**
++					 * if we are increasing - then store some statistics, since bad rssi signal,
++					 * or sometimes errors on LS5 make us to do endless inrease
++					 * so in that case I'll try to use some statistics
++					 *
++					 * If array is filled, I think its veryneeded to
++					 * remmember last value
++					 **/
++					if (sc->sc_dynack.da_stats.ds_idx < ATH_DYNACK_STAT_MAX) {
++						idx = sc->sc_dynack.da_stats.ds_idx++;
++					} else {
++						idx = ATH_DYNACK_STAT_MAX - 1;
++					}
++					tmp = sc->sc_dynack.da_stay + sc->sc_dynack.da_inc - sc->sc_dynack.da_dec;
++					sc->sc_dynack.da_stats.ds_retries[idx] = (tmp > 0) ? tmp : 1;
++					sc->sc_dynack.da_stats.ds_ack[idx] = ath_dynack_get_ack(sc);
++
++					/**
++					 * ath_dynack_changetimeout returns 0 on success
++					 * if minimal threshold is reached, then it returs +1
++					 * if ath_dynack_changetimeout  returns negative error code (-1)
++					 * this means that it has reached the minimal limit, so I should stop
++					 * changing it
++					 **/
++					err = ath_dynack_changetimeout(sc, direction * sc->sc_dynack.da_step);
++					if (err < 0) {
++						if (sc->sc_dynack.da_step)
++							sc->sc_dynack.da_step = sc->sc_dynack.da_step / 2;
++						else
++							ath_dynack_suspend(sc);
++					} else if (err > 0) {
++						ath_dynack_set_ack(sc, ath_dynack_stats_best_ack(sc));
++						ath_dynack_suspend(sc);
++					}
++
++				} else {
++					ath_dynack_set_ack(sc, ath_dynack_stats_best_ack(sc));
++					ath_dynack_suspend(sc);
++				}
++			}
++		} else {
++			/**
++			 * Check. Maybe many errors are happening.
++			 * in that case I'll do some action even if a delay was scheduled
++			 * but do it just once
++			 **/
++			if (sc->sc_dynack.da_inc > (sc->sc_dynack.da_dec + sc->sc_dynack.da_stay)
++					&& (sc->sc_dynack.da_prevaction == 0)) {
++				DPRINTF(sc, ATH_DEBUG_DYNACK,
++						"%s: respecting errors. Incrementing ack timeout a bit.\n", __func__);
++				ath_dynack_changetimeout(sc, 3);
++				sc->sc_dynack.da_prevaction = 1;
++			}
++		}
++
++		sc->sc_dynack.da_dec = sc->sc_dynack.da_inc = sc->sc_dynack.da_stay = 0;
++		sc->sc_dynack.da_packet_count = 0;
++	}
++}
++
+Index: madwifi-dfs-r3319-20080201/ath/if_ath_dynack.h
+===================================================================
+--- /dev/null
++++ madwifi-dfs-r3319-20080201/ath/if_ath_dynack.h
+@@ -0,0 +1,68 @@
++/*-
++ * Copyright (c) 2008 Ubiquiti Networks, Inc.
++ * All rights reserved.
++ *
++ * Redistribution and use in source and binary forms, with or without
++ * modification, are permitted provided that the following conditions
++ * are met:
++ * 1. Redistributions of source code must retain the above copyright
++ *    notice, this list of conditions and the following disclaimer,
++ *    without modification.
++ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
++ *    similar to the "NO WARRANTY" disclaimer below ("Disclaimer") and any
++ *    redistribution must be conditioned upon including a substantially
++ *    similar Disclaimer requirement for further binary redistribution.
++ * 3. Neither the names of the above-listed copyright holders nor the names
++ *    of any contributors may be used to endorse or promote products derived
++ *    from this software without specific prior written permission.
++ *
++ * Alternatively, this software may be distributed under the terms of the
++ * GNU General Public License ("GPL") version 2 as published by the Free
++ * Software Foundation.
++ *
++ * NO WARRANTY
++ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
++ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
++ * LIMITED TO, THE IMPLIED WARRANTIES OF NONINFRINGEMENT, MERCHANTIBILITY
++ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
++ * THE COPYRIGHT HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY,
++ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
++ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
++ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER
++ * IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
++ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
++ * THE POSSIBILITY OF SUCH DAMAGES.
++ */
++#ifndef _DEV_ATH_DYNACK_H
++#define _DEV_ATH_DYNACK_H
++
++struct ath_dynack {
++#define ATH_DYNACK_STAT_MAX                     32
++	struct {
++		unsigned short ds_retries[ATH_DYNACK_STAT_MAX];
++		unsigned short ds_ack[ATH_DYNACK_STAT_MAX];
++		short ds_idx;
++	} da_stats;
++
++	unsigned int da_checkcount;
++	unsigned int da_delay_period;
++	unsigned int da_max_ack;
++
++	unsigned int da_packet_count;
++
++	unsigned int da_inc;
++	unsigned int da_dec;
++	unsigned int da_stay;
++
++	short da_prevaction;
++	short da_sameaction;
++	unsigned long da_lasttime;
++	int da_delay;
++	short da_step;
++};
++
++void ath_dynack_init(struct ath_softc *sc);
++void ath_dynack_update(struct ath_softc *sc, struct ath_tx_status *txstat);
++
++
++#endif /* _DEV_ATH_DYNACK_H */
+Index: madwifi-dfs-r3319-20080201/ath/if_athvar.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_athvar.h
++++ madwifi-dfs-r3319-20080201/ath/if_athvar.h
+@@ -47,6 +47,7 @@
+ #include "ah_os.h"
+ #include "if_athioctl.h"
+ #include "net80211/ieee80211.h"		/* XXX for WME_NUM_AC */
++#include "if_ath_dynack.h"
+ #include <asm/io.h>
+ #include <linux/list.h>
+ 
+@@ -817,6 +818,7 @@
+ 						 * detected radars */
+ 	u_int32_t sc_nexttbtt;
+ 	u_int64_t sc_last_tsf;
++	struct ath_dynack sc_dynack;		/* data for dynamic ACK */
+ };
+ 
+ typedef void (*ath_callback) (struct ath_softc *);

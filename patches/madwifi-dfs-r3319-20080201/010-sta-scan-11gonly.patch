@@ -1,0 +1,75 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_sta.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_scan_sta.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_sta.c
+@@ -317,29 +317,6 @@
+ #undef ISPROBE
+ }
+ 
+-static struct ieee80211_channel *
+-find11gchannel(struct ieee80211com *ic, int i, int freq)
+-{
+-	struct ieee80211_channel *c;
+-	int j;
+-
+-	/*
+-	 * The normal ordering in the channel list is b channel
+-	 * immediately followed by g so optimize the search for
+-	 * this.  We'll still do a full search just in case.
+-	 */
+-	for (j = i+1; j < ic->ic_nchans; j++) {
+-		c = &ic->ic_channels[j];
+-		if (c->ic_freq == freq && IEEE80211_IS_CHAN_ANYG(c))
+-			return c;
+-	}
+-	for (j = 0; j < i; j++) {
+-		c = &ic->ic_channels[j];
+-		if (c->ic_freq == freq && IEEE80211_IS_CHAN_ANYG(c))
+-			return c;
+-	}
+-	return NULL;
+-}
+ static const u_int chanflags[] = {
+ 	IEEE80211_CHAN_B,	/* IEEE80211_MODE_AUTO */
+ 	IEEE80211_CHAN_A,	/* IEEE80211_MODE_11A */
+@@ -356,7 +333,7 @@
+ 	struct ieee80211_scan_state *ss,
+ 	enum ieee80211_phymode mode, const u_int16_t freq[], int nfreq)
+ {
+-	struct ieee80211_channel *c, *cg;
++	struct ieee80211_channel *c, *cg = NULL;
+ 	u_int modeflags;
+ 	int i;
+ 
+@@ -364,17 +341,22 @@
+ 	modeflags = chanflags[mode];
+ 	for (i = 0; i < nfreq; i++) {
+ 		c = ieee80211_find_channel(ic, freq[i], modeflags);
+-		if (c == NULL || isclr(ic->ic_chan_active, c->ic_ieee))
+-			continue;
+-		if (mode == IEEE80211_MODE_AUTO) {
+-			/*
+-			 * XXX special-case 11b/g channels so we select
+-			 *     the g channel if both are present.
+-			 */
+-			if (IEEE80211_IS_CHAN_B(c) &&
+-			    (cg = find11gchannel(ic, i, c->ic_freq)) != NULL)
++		/*
++		 * special-case 11b/g channels - if mode is Auto, allow upgrading to
++		 * g channel if b does not exist, or both b and g are present
++		 *
++		 * XXX: ineffective, but working
++		 */
++		if (mode == IEEE80211_MODE_AUTO && (c == NULL || IEEE80211_IS_CHAN_B(c))) {
++			cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_G);
++			if (cg == NULL) {
++				cg = ieee80211_find_channel(ic, freq[i], IEEE80211_CHAN_PUREG);
++			}
++			if (cg != NULL)
+ 				c = cg;
+ 		}
++		if (c == NULL || isclr(ic->ic_chan_active, c->ic_ieee))
++			continue;
+ 		if (ss->ss_last >= IEEE80211_SCAN_MAX)
+ 			break;
+ 		ss->ss_chans[ss->ss_last++] = c;

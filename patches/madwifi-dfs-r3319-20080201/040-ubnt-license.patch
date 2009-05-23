@@ -1,0 +1,108 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -101,6 +101,7 @@
+ #endif
+ 
+ #include "ah_os.h"
++#include <linux/firmware.h>
+ 
+ /* unaligned little endian access */
+ #define LE_READ_2(p)							\
+@@ -503,6 +504,26 @@
+ 				(bssid)[0] |= (((id) << 2) | 0x02);	\
+ 		} while (0)
+ 
++
++
++static int _ath_hal_setlicense(struct ath_softc *sc)
++{
++	const struct firmware *lic = NULL;
++	int rv = request_firmware(&lic, "ubnt-license.dat", sc->sc_dev->dev.parent);
++
++	printk("req fw = %d\n", rv);
++
++	if (rv) {
++		printk(KERN_INFO "ath_hal: ubnt license upload failed.\n");
++		return rv;
++	}
++	rv = ath_hal_setlicense(lic->data, lic->size);
++	release_firmware(lic);
++	printk("set license = %d\n", rv);
++	return (rv == AH_TRUE) ? 0 : 1;
++}
++
++
+ /* Initialize ath_softc structure */
+ 
+ int
+@@ -549,6 +570,9 @@
+ 	ATH_INIT_TQUEUE(&sc->sc_rxorntq,  ath_rxorn_tasklet,	dev);
+ 	ATH_INIT_TQUEUE(&sc->sc_fataltq,  ath_fatal_tasklet,	dev);
+ 
++	/* upload UBNT license to enable bonus hal features */
++	_ath_hal_setlicense(sc);
++
+ 	/*
+ 	 * Attach the HAL and verify ABI compatibility by checking
+ 	 * the HAL's ABI signature against the one the driver was
+Index: madwifi-dfs-r3319-20080201/ath/if_ath_ahb.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath_ahb.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath_ahb.c
+@@ -200,11 +200,12 @@
+ }
+ 
+ static int
+-init_ath_wmac(u_int16_t devid, u_int16_t wlanNum, struct ar531x_config *config)
++init_ath_wmac(u_int16_t devid, struct platform_device *pdev, struct ar531x_config *config)
+ {
+ 	const char *athname;
+ 	struct net_device *dev;
+ 	struct ath_ahb_softc *sc;
++	u_int16_t wlanNum = pdev->id;
+ 
+ 	if (((wlanNum != 0) && (wlanNum != 1)) ||
+ 		(sclist[wlanNum] != NULL))
+@@ -226,6 +227,7 @@
+ 	 */
+ 	sc->aps_sc.sc_invalid = 1;
+ 	SET_MODULE_OWNER(dev);
++	SET_NETDEV_DEV(dev, &pdev->dev);
+ 	sclist[wlanNum] = sc;
+ 
+ 	switch (wlanNum) {
+@@ -286,7 +288,7 @@
+ 	devid = (long) config->tag;
+ 	config->tag = NULL;
+ 
+-	return init_ath_wmac(devid, pdev->id, config);
++	return init_ath_wmac(devid, pdev, config);
+ }
+ 
+ 
+Index: madwifi-dfs-r3319-20080201/ath_hal/ah_os.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath_hal/ah_os.c
++++ madwifi-dfs-r3319-20080201/ath_hal/ah_os.c
+@@ -574,6 +574,7 @@
+ EXPORT_SYMBOL(ath_hal_mhz2ieee);
+ EXPORT_SYMBOL(ath_hal_process_noisefloor);
+ EXPORT_SYMBOL(ath_hal_setvendor);
++EXPORT_SYMBOL(ath_hal_setlicense);
+ 
+ static int __init
+ init_ath_hal(void)
+Index: madwifi-dfs-r3319-20080201/ath_hal/ah_os.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath_hal/ah_os.h
++++ madwifi-dfs-r3319-20080201/ath_hal/ah_os.h
+@@ -262,4 +262,7 @@
+ 				       HAL_STATUS *);
+ extern void _ath_hal_detach(struct ath_hal *);
+ 
++/* pass the license data to hal */
++extern u_int  __ahdecl ath_hal_setlicense(void* buf, u_int length);
++
+ #endif				/* _ATH_AH_OSDEP_H_ */

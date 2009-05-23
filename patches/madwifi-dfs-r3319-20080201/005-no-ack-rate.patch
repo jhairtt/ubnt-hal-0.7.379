@@ -1,0 +1,20 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -2496,7 +2496,6 @@
+ 	 * immediately call back to us to send mgmt frames.
+ 	 */
+ 	ath_chan_change(sc, ic->ic_curchan);
+-	ath_set_ack_bitrate(sc, sc->sc_ackrate);
+ 	dev->flags |= IFF_RUNNING;		/* we are ready to go */
+ 	ieee80211_start_running(ic);		/* start all VAPs */
+ #ifdef ATH_TX99_DIAG
+@@ -2735,7 +2734,6 @@
+ 	if (sc->sc_beacons)
+ 		ath_beacon_config(sc, NULL);	/* restart beacons */
+ 	ath_hal_intrset(ah, sc->sc_imask);
+-	ath_set_ack_bitrate(sc, sc->sc_ackrate);
+ 	netif_wake_queue(dev);		/* restart xmit */
+ #ifdef ATH_SUPERG_XR
+ 	/*

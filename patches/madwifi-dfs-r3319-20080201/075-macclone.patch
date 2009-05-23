@@ -1,0 +1,155 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_ioctl.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+@@ -654,6 +654,7 @@
+ 							   off a channel once radar is detected?
+ 							   FCC requires 30m, so that is the default. */
+ 	IEEE80211_PARAM_ADDMTIKIE		= 73,   /* Add Mikrotik compatible IE */
++	IEEE80211_PARAM_MACCLONE		= 74,   /* MAC cloning */
+ };
+ 
+ #define	SIOCG80211STATS			(SIOCDEVPRIVATE+2)
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_output.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_output.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_output.c
+@@ -58,6 +58,8 @@
+ #include <net80211/ieee80211_monitor.h>
+ #include <net80211/if_athproto.h>
+ 
++#include <ath/if_ath_hal.h>
++
+ #ifdef IEEE80211_DEBUG
+ /*
+  * Decide if an outbound management frame should be
+@@ -75,6 +77,41 @@
+ #endif
+ 
+ 
++static int
++ieee80211_setup_macclone(struct ieee80211vap *vap, const char* addr) {
++	struct net_device *dev = NULL;
++	struct ieee80211com *ic = vap->iv_ic;
++	struct ath_softc *sc = ic->ic_dev->priv;
++	struct ath_hal *ah = sc->sc_ah;
++
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,24))
++#if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,22))
++	for (dev=dev_base; dev; dev=dev->next)
++#else
++	for_each_netdev(dev)
++#endif
++#else /* 2.6.24 and up */
++	for_each_netdev(&init_net, dev)
++#endif
++
++		if (!memcmp(dev->dev_addr, addr, dev->addr_len))
++			break;
++
++	if (!dev) {
++		ATH_LOCK(sc);
++		IEEE80211_ADDR_COPY(ic->ic_myaddr, addr);
++		IEEE80211_ADDR_COPY(ic->ic_dev->dev_addr, ic->ic_myaddr);
++		IEEE80211_ADDR_COPY(vap->iv_myaddr, ic->ic_myaddr);
++		/* XXX not right for multiple vap's */
++		ath_hal_setmac(ah, ic->ic_dev->dev_addr);
++		ic->ic_reset(ic->ic_dev);
++		ATH_UNLOCK(sc);
++
++		return 1;
++	}
++	return 0;
++}
++
+ /*
+  * Determine the priority based on VLAN and/or IP TOS. Priority is
+  * written into the skb->priority field. On success, returns 0. Failure
+@@ -249,8 +286,16 @@
+ 	eh = (struct ether_header *)skb->data;
+ 	if (vap->iv_opmode == IEEE80211_M_WDS)
+ 		ni = ieee80211_find_txnode(vap, vap->wds_mac);
+-	else
++	else {
++		 if ((vap->iv_flags_ext & IEEE80211_FEXT_MACCLONE) != 0 &&
++				 vap->iv_opmode == IEEE80211_M_STA &&
++				 memcmp(eh->ether_shost, vap->iv_myaddr, ETH_ALEN) != 0) {
++			 if (ieee80211_setup_macclone(vap, eh->ether_shost) != 0) {
++				 goto bad;
++			 }
++		 }
+ 		ni = ieee80211_find_txnode(vap, eh->ether_dhost);
++	}
+ 	if (ni == NULL) {
+ 		/* NB: ieee80211_find_txnode does stat+msg */
+ 		goto bad;
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_var.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+@@ -589,6 +589,7 @@
+ #define IEEE80211_FEXT_DROPUNENC_EAPOL	0x00000800	/* CONF: drop unencrypted eapol frames */
+ #define IEEE80211_FEXT_APPIE_UPDATE	0x00001000	/* STATE: beacon APP IE updated */
+ #define IEEE80211_FEXT_ADDMTIKIE	0x20000000	/* STATUS: add microtik compatible IE */
++#define IEEE80211_FEXT_MACCLONE		0x40000000	/* STATUS: mac cloning */
+ 
+ #define IEEE80211_COM_UAPSD_ENABLE(_ic)		((_ic)->ic_flags_ext |= IEEE80211_FEXT_UAPSD)
+ #define IEEE80211_COM_UAPSD_DISABLE(_ic)	((_ic)->ic_flags_ext &= ~IEEE80211_FEXT_UAPSD)
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -64,6 +64,8 @@
+ 
+ #include <net80211/ieee80211_var.h>
+ #include <net80211/ieee80211_linux.h>
++#include <ath/if_athvar.h>
++#include <ath/if_ath_hal.h>
+ #include "ah.h"
+ 
+ #define	IS_UP(_dev) \
+@@ -2831,6 +2833,23 @@
+ 			vap->iv_flags_ext &= ~IEEE80211_FEXT_ADDMTIKIE;
+ 		retv = ENETRESET;	/* Renegotiate for capabilities */
+ 		break;
++	case IEEE80211_PARAM_MACCLONE:
++		if (value)
++			vap->iv_flags_ext |= IEEE80211_FEXT_MACCLONE;
++		else {
++			struct ath_softc *sc = ic->ic_dev->priv;
++			struct ath_hal *ah = sc->sc_ah;
++			vap->iv_flags_ext &= ~IEEE80211_FEXT_MACCLONE;
++			ATH_LOCK(sc);
++			IEEE80211_ADDR_COPY(ic->ic_myaddr, dev->dev_addr);
++			IEEE80211_ADDR_COPY(ic->ic_dev->dev_addr, ic->ic_myaddr);
++			IEEE80211_ADDR_COPY(vap->iv_myaddr, ic->ic_myaddr);
++			/* XXX not right for multiple vap's */
++			ath_hal_setmac(ah, ic->ic_dev->dev_addr);
++			ic->ic_reset(ic->ic_dev);
++			ATH_UNLOCK(sc);
++		}
++		break;
+ #ifdef ATH_REVERSE_ENGINEERING
+ 	case IEEE80211_PARAM_DUMPREGS:
+ 		ieee80211_dump_registers(dev, info, w, extra);
+@@ -3162,6 +3181,9 @@
+ 	case IEEE80211_PARAM_ADDMTIKIE:
+ 		param[0] = (vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0;
+ 		break;
++        case IEEE80211_PARAM_MACCLONE:
++                param[0] = (vap->iv_flags_ext & IEEE80211_FEXT_MACCLONE) != 0;
++                break;
+ 	default:
+ 		return -EOPNOTSUPP;
+ 	}
+@@ -5640,6 +5662,10 @@
+ 	  IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1, 0, "addmtikie" },
+ 	{ IEEE80211_PARAM_ADDMTIKIE,
+ 	  0, IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1, "get_addmtikie" },
++	{ IEEE80211_PARAM_MACCLONE,
++	  IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1, 0, "macclone" },
++	{ IEEE80211_PARAM_MACCLONE,
++	  0, IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1, "get_macclone" },
+ 
+ #ifdef ATH_REVERSE_ENGINEERING
+ 	/*

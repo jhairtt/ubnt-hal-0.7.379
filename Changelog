@@ -1,0 +1,74 @@
+Madwifi (Atheros) binary-compatible HAL for Ubiquiti Networks cards
+===================================================================
+
+Version 0.7-beta.379 (2008-04-17)
+---------------------------------
+ - fixed the following patches for 2.6.24 and up
+   - 030-chanwidth-ccode.patch
+   - 073-dynack.patch
+   - 300-napi_polling.patch
+
+Version 0.7-beta.377 (2008-04-16)
+---------------------------------
+ - fixed TX power setting into hardware
+ - fixed VLAN WMM classification issue
+ - fixed frequency translation issues for XR9,XR3 products
+ - fixed AP scan module to work properly with half/quarter rates
+ - updated openwrt patches which did not apply cleanly
+ - macclone patch now supports 2.6.24 kernel properly
+ - added licensed frequency support (you have to get license from ubnt)
+ - extended Mikrotik IE support - only use it when AP/clients have it enabled
+
+Version 0.6-beta.280 (2008-03-05)
+---------------------------------
+ - moved to madwifi-dfs-r3319-20080201 snapshot
+ - even though we moved to madwifi DFS branch, DFS is still disabled!
+ - added frequency translation, so that special frequencies (like 900Mhz)
+   would be reported "as is" to the userspace applications
+ - ported the following features from LiteStation products:
+   - dynamic ACK (aka AutoACK)
+   - report RX Rate of the last received data packet
+   - CCQ (client connection quality) reporting
+   - rudimentary Mikrotik IE inclusion
+   - MAC cloning support (suitable for single MAC bridging solutions)
+
+Version 0.5-beta.226 (unreleased to public)
+------------------------------------------
+ - still disabled DFS
+ - fixed xscale-be-elf hw-reset failures
+ - added x86_64-elf builds
+ - added tx power translation inside the HAL
+ - implemented autodetection for cards:
+   - XR3-2.8
+   - XR3
+   - XR3-3.6
+   - XR2.3
+
+Version 0.4-alpha.179 (2007-12-7)
+---------------------------------
+ - disabled DFS/radar support for 5Ghz cards temporarily, as it was causing
+ random crashes
+ - fixed mips2-le build (tested on rb532a board)
+ - fixed SR9/XR9 frequency mappings (with autodetection)
+ - improved power limit handling according to calibration data (XR5 now 
+ allows 18 dBm setting as it is supposed to)
+ - implemented card autodetection - the following cards will no longer need
+ manual country code changes to work as expected:
+   - SR9/XR9
+   - XR7
+   - XR2.3
+   - SR4/SR4C
+
+Version 0.3-alpha.139
+----------------------
+ - moved to 0.9.30.13 binary-compatible HAL version, which means we've
+ dropped support for 0.9.3.x in favor of madwifi-ng-r2568-20070710 snapshot
+ - added more architecture builds:
+    - xscale-be/le, but only xscale-be tested)
+    - mips2-be/le (untested!)
+    - mipsisa32-be/le (untested!)
+    - powerPC (untested!)
+ - basic tests (mostly x86) done for the following Ubiquiti cards:
+    - SR2/XR2
+    - SR5/XR5
+    - SR9/XR9

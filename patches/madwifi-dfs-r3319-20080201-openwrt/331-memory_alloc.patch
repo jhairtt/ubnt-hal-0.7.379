@@ -1,0 +1,41 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -3333,15 +3333,15 @@
+ 	 * without affecting any other bridge ports. */
+ 	if (skb_cloned(skb)) {
+ 		/* Remember the original SKB so we can free up our references */
+-		struct sk_buff *skb_orig = skb;
+-		skb = skb_copy(skb, GFP_ATOMIC);
+-		if (skb == NULL) {
++		struct sk_buff *skb_new;
++		skb_new = skb_copy(skb, GFP_ATOMIC);
++		if (skb_new == NULL) {
+ 			requeue = 1;
+ 			goto hardstart_fail;
+ 		}
+-		/* If the clone works, bump the reference count for our copy. */
+-		SKB_CB(skb)->ni = ieee80211_ref_node(SKB_CB(skb_orig)->ni);
+-		ieee80211_dev_kfree_skb(&skb_orig);
++		ieee80211_skb_copy_noderef(skb, skb_new);
++		ieee80211_dev_kfree_skb(&skb);
++		skb = skb_new;
+ 	} else {
+ 		if (SKB_CB(skb)->ni != NULL) 
+ 			ieee80211_unref_node(&SKB_CB(skb)->ni);
+@@ -3610,11 +3610,13 @@
+ 	 */
+ 	error = ath_tx_start(dev, SKB_CB(skb)->ni, bf, skb, 0);
+ 	if (error)
+-		goto bad;
++		return error;
+ 
+ 	sc->sc_stats.ast_tx_mgmt++;
+ 	return 0;
+ bad:
++	if (skb)
++		ieee80211_dev_kfree_skb(&skb);
+ 	ath_return_txbuf(sc, &bf);
+ 	return error;
+ }

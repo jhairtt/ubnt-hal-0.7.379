@@ -1,0 +1,306 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -6327,6 +6327,60 @@
+ }
+ 
+ static void
++ath_update_extra_stats(struct ath_softc *sc, struct ieee80211_node* ni,
++		struct ath_rx_status *rxstat, struct sk_buff *skb)
++{
++	int val, rssi, type;
++	const struct ieee80211_frame* wh = NULL;
++
++	if (!ni || !rxstat)
++		return;
++	type = -1;
++	rssi = rxstat->rs_rssi;
++	if (skb != 0 && skb->data != 0) {
++		wh = (const struct ieee80211_frame *)skb->data;
++		if ((wh->i_fc[0] & IEEE80211_FC0_VERSION_MASK) == IEEE80211_FC0_VERSION_0)
++			type =  wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK;
++	}
++
++	/**
++	 * UBNT. Some hack done here
++	 * Mikrotik from time to time sends empty IP packet
++	 * (a kind of "keep alive" msg) in low rates
++	 * we're skipping all packets shorter than 64 bytes
++	 * (64 is the minimal ethernet packet size)
++	 * Also skip multicast packets, which are sent in lowest rates
++	 * Multicast checking is not nice also, bad case is when DS-to-DS
++	 * and DA = multicast, but I just don't want to reimplement
++	 * ieee80211_input function here.
++	 **/
++	if ((type == IEEE80211_FC0_TYPE_DATA) && sc!=0 && skb!=0) {
++		int skb_len = skb->len;
++		int is_mcast = (wh->i_addr1[0] & 0x01) || (wh->i_addr3[0] & 0x01);
++		int rate = rxstat->rs_rate;
++
++		if (rate & ~0x1F) {
++			printk(KERN_ERR "%s: invalid rate!\n", __func__);
++			return;
++		}
++
++		val = ni->ni_stat_extras.rate_extras[rate].rssi;
++		if (!is_mcast && (skb_len >= 64)) {
++			sc->sc_rxrate = rate;
++			ni->ni_rxrate = sc->sc_hwmap[rate].ieeerate;
++		}
++		ni->ni_stat_extras.last_rate = sc->sc_hwmap[rate].ieeerate;
++		ni->ni_stat_extras.rate_extras[rate].ieeerate = ni->ni_stat_extras.last_rate;
++		ni->ni_stat_extras.rate_extras[rate].rssi = val ?
++			(rssi > 0 ? (rssi + val) / 2 : val) : (rssi > 0 ? rssi : 0);
++	} else {
++		val = ni->ni_stat_extras.mgmt_rssi;
++		ni->ni_stat_extras.mgmt_rssi = val ?
++			(rssi > 0 ? (rssi + val) / 2 : val) : (rssi > 0 ? rssi : 0);
++	}
++}
++
++static void
+ ath_rx_tasklet(TQUEUE_ARG data)
+ {
+ #define	PA2DESC(_sc, _pa) \
+@@ -6551,7 +6605,11 @@
+ 			 * grab a reference for processing the frame. */
+ 			ni = ieee80211_ref_node(ni);
+ 			ATH_RSSI_LPF(ATH_NODE(ni)->an_avgrssi, rs->rs_rssi);
++			/* update extra stats of the received packet */
++			ath_update_extra_stats(sc, ni, rs, skb);
++
+ 			type = ieee80211_input(ni->ni_vap, ni, skb, rs->rs_rssi, bf->bf_tsf);
++
+ 			ieee80211_unref_node(&ni);
+ 		} else {
+ 			/*
+@@ -6564,7 +6622,12 @@
+ 				ieee80211_keyix_t keyix;
+ 
+ 				ATH_RSSI_LPF(ATH_NODE(ni)->an_avgrssi, rs->rs_rssi);
++				/* update extra stats of the received packet */
++				ath_update_extra_stats(sc, ni, rs, skb);
++
+ 				type = ieee80211_input(ni->ni_vap, ni, skb, rs->rs_rssi, bf->bf_tsf);
++
++
+ 				/*
+ 				 * If the station has a key cache slot assigned
+ 				 * update the key->node mapping table.
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_ioctl.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+@@ -300,6 +300,17 @@
+ 	struct ieee80211_nodestats is_stats;
+ };
+ 
++struct rate_extras {
++	u_int8_t ieeerate;
++	u_int8_t rssi;
++};
++
++struct stat_extras {
++	u_int8_t mgmt_rssi;      /* avg rssi for rx'd management packets */
++	u_int8_t last_rate;      /* last updated rate index in rate_info */
++	struct rate_extras rate_extras[32];
++};
++
+ /*
+  * Station information block; the mac address is used
+  * to retrieve other data like stats, unicast key, etc.
+@@ -318,6 +329,7 @@
+ 	u_int8_t isi_nrates;		/* negotiated rates */
+ 	u_int8_t isi_rates[IEEE80211_RATE_MAXSIZE];
+ 	u_int8_t isi_txrate;		/* index to isi_rates[] */
++	u_int8_t isi_rxrate;		/* index to isi_rates[] */
+ 	u_int16_t isi_ccq;		/* client connection quality */
+ 	u_int16_t isi_ie_len;		/* IE length */
+ 	u_int16_t isi_associd;		/* assoc response */
+@@ -329,6 +341,8 @@
+ 	u_int8_t isi_uapsd;		/* UAPSD queues */
+ 	u_int8_t isi_opmode;		/* sta operating mode */
+ 
++	struct stat_extras isi_stat_extras; /* extra statistics */
++
+ 	/* XXX frag state? */
+ 	/* variable length IE data */
+ };
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_node.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_node.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_node.h
+@@ -84,6 +84,7 @@
+ struct ieee80211vap;
+ struct ath_buf;
+ struct ath_softc;
++struct stat_extras;
+ 
+ /*
+  * Node specific information.  Note that drivers are expected
+@@ -176,12 +177,14 @@
+ 	short ni_inact;				/* inactivity mark count */
+ 	short ni_inact_reload;			/* inactivity reload value */
+ 	int ni_txrate;				/* index to ni_rates[] */
++	int ni_rxrate;				/* index to ni_rates[] */
+ 	struct ieee80211_nodestats ni_stats;	/* per-node statistics */
+ 	struct ieee80211vap *ni_prev_vap;  	/* previously associated vap */
+ 	u_int8_t ni_uapsd;			/* U-APSD per-node flags matching WMM STA Qos Info field */
+ 	u_int8_t ni_uapsd_maxsp; 		/* maxsp from flags above */
+ 	u_int16_t ni_uapsd_trigseq[WME_NUM_AC];	/* trigger suppression on retry */
+ 	__le16 ni_pschangeseq;
++	struct stat_extras ni_stat_extras;	/* extra statistics */
+ };
+ MALLOC_DECLARE(M_80211_NODE);
+ 
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -4315,6 +4315,7 @@
+ 	struct ieee80211com *ic = vap->iv_ic;
+ 	struct ieee80211req_sta_info *si;
+ 	size_t ielen, len;
++	int i;
+ 	u_int32_t ccq = 0;
+ 	u_int8_t *cp;
+ 
+@@ -4342,10 +4343,18 @@
+ 	si->isi_erp = ni->ni_erp;
+ 	IEEE80211_ADDR_COPY(si->isi_macaddr, ni->ni_macaddr);
+ 	si->isi_nrates = ni->ni_rates.rs_nrates;
+-	if (si->isi_nrates > 15)
+-		si->isi_nrates = 15;
++	if (si->isi_nrates > IEEE80211_RATE_MAXSIZE)
++		si->isi_nrates = IEEE80211_RATE_MAXSIZE;
+ 	memcpy(si->isi_rates, ni->ni_rates.rs_rates, si->isi_nrates);
++	memcpy(&si->isi_stat_extras, &ni->ni_stat_extras, sizeof(ni->ni_stat_extras));
+ 	si->isi_txrate = ni->ni_txrate;
++	si->isi_rxrate = 0;
++	for (i = 0; i < si->isi_nrates; ++i) {
++		if (ni->ni_rxrate == si->isi_rates[i]) {
++			si->isi_rxrate = i;
++			break;
++		}
++	}
+ 
+ 	ccq = (10 * (100 - ni->ni_rates.rs_per[si->isi_txrate]));
+ 	if (vap->iv_fixed_rate == IEEE80211_FIXED_RATE_NONE) {
+Index: madwifi-dfs-r3319-20080201/tools/80211stats.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/tools/80211stats.c
++++ madwifi-dfs-r3319-20080201/tools/80211stats.c
+@@ -162,6 +162,22 @@
+ static struct ifreq ifr;
+ static int s;
+ 
++static int
++rate_extras_cmp(const void* left, const void* right)
++{
++	const struct rate_extras* l = (const struct rate_extras*)left;
++	const struct rate_extras* r = (const struct rate_extras*)right;
++
++	return l->ieeerate > r->ieeerate ? 1 : -1;
++}
++
++static void
++sort_rates(struct rate_extras* data, int count)
++{
++	qsort(data, count, sizeof(struct rate_extras), rate_extras_cmp);
++}
++
++
+ static void
+ print_sta_stats(FILE *fd, const u_int8_t macaddr[IEEE80211_ADDR_LEN],
+ 		struct ieee80211req_sta_info *si)
+@@ -172,6 +188,7 @@
+ 	struct ieee80211req_sta_stats stats;
+ 	const struct ieee80211_nodestats *ns = &stats.is_stats;
+ 	const char *sep;
++	int val, i;
+ 
+ 	(void) memset(&iwr, 0, sizeof(iwr));
+ 	(void) strncpy(iwr.ifr_name, ifr.ifr_name, sizeof(iwr.ifr_name));
+@@ -184,10 +201,24 @@
+ 
+ 	fprintf(fd, "%s:\n", ether_ntoa((const struct ether_addr*) macaddr));
+ 
+-	if (si)
+-		fprintf(fd, "\tfreq %d  rssi %d  ccq %d  txrate %d\n",
++	if (si) {
++		fprintf(fd, "\tfreq %d  rssi %d  ccq %d  txrate %d  rxrate %d\n",
+ 				si->isi_freq, si->isi_rssi, si->isi_ccq,
+-				(si->isi_rates[si->isi_txrate] & 0x7F) / 2);
++				(si->isi_rates[si->isi_txrate] & 0x7F) / 2,
++				(si->isi_rates[si->isi_rxrate] & 0x7F) / 2);
++		sort_rates(si->isi_stat_extras.rate_extras, 32);
++		for (i = 0; i < 32; ++i ) {
++			if (si->isi_stat_extras.rate_extras[i].rssi == 0)
++				continue;
++			val = (si->isi_stat_extras.rate_extras[i].ieeerate & IEEE80211_RATE_VAL);
++			if (val % 2)
++				printf("\t%6f", val / 2.0);
++			else
++				printf("\t%6d", val / 2);
++			printf("Mbps RSSI: %d %c\n", si->isi_stat_extras.rate_extras[i].rssi,
++					si->isi_stat_extras.last_rate == val ? '*' : ' ' );
++                }
++	}
+ 
+ 	sep = "\t";
+ 	STAT(rx_data, "%u");
+Index: madwifi-dfs-r3319-20080201/tools/wlanconfig.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/tools/wlanconfig.c
++++ madwifi-dfs-r3319-20080201/tools/wlanconfig.c
+@@ -556,13 +556,28 @@
+ 	return (i < 17 ? NULL : a);
+ }
+ 
++static int
++rate_extras_cmp(const void* left, const void* right)
++{
++    const struct rate_extras* l = (const struct rate_extras*)left;
++    const struct rate_extras* r = (const struct rate_extras*)right;
++
++    return l->ieeerate > r->ieeerate ? 1 : -1;
++}
++
++static void
++sort_rates(struct rate_extras* data, int count)
++{
++    qsort(data, count, sizeof(struct rate_extras), rate_extras_cmp);
++}
++
+ static void
+ list_stations(const char *ifname)
+ {
+ 	uint8_t buf[24*1024];
+ 	struct iwreq iwr;
+ 	uint8_t *cp;
+-	int s, len;
++	int s, len, i, val;
+ 
+ 	s = socket(AF_INET, SOCK_DGRAM, 0);
+ 	if (s < 0)
+@@ -636,6 +651,19 @@
+ 				   WME_UAPSD_MAXSP(si->isi_uapsd) == 2 ? "4" :
+ 				   WME_UAPSD_MAXSP(si->isi_uapsd) == 3 ? "6" : "NoLimit");
+ 		}
++		printf("\t      MGMT RSSI: %d\n", si->isi_stat_extras.mgmt_rssi);
++                sort_rates(si->isi_stat_extras.rate_extras, 32);
++		for (i = 0; i < 32; ++i ) {
++		    if (si->isi_stat_extras.rate_extras[i].rssi == 0)
++                        continue;
++		    val = (si->isi_stat_extras.rate_extras[i].ieeerate & IEEE80211_RATE_VAL);
++		    if (val % 2)
++			printf("\t%6f", val / 2.0);
++		    else
++                        printf("\t%6d", val / 2);
++		    printf("Mbps RSSI: %d %c\n", si->isi_stat_extras.rate_extras[i].rssi,
++			   si->isi_stat_extras.last_rate == val ? '*' : ' ' );
++		}
+ 		cp += si->isi_len;
+ 		len -= si->isi_len;
+ 	} while (len >= sizeof(struct ieee80211req_sta_info));

@@ -1,0 +1,15 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -6553,8 +6553,9 @@
+ 			/*
+ 			 * Reject error frames if we have no vaps that
+ 			 * are operating in monitor mode.
++			 * Reject empty frames as well
+ 			 */
+-			if (sc->sc_nmonvaps == 0)
++			if ((sc->sc_nmonvaps == 0) || (rs->rs_datalen == 0))
+ 				goto rx_next;
+ 		}
+ rx_accept:

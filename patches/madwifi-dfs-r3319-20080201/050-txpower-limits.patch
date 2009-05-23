@@ -1,0 +1,47 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211.c
+@@ -340,7 +340,6 @@
+ 	TAILQ_INIT(&ic->ic_vaps);
+ 
+ 	ic->ic_txpowlimit = IEEE80211_TXPOWER_MAX;
+-	ic->ic_txpowlimit = IEEE80211_TXPOWER_MIN;
+ 	ic->ic_newtxpowlimit = IEEE80211_TXPOWER_MAX;
+ 
+ 	init_timer(&ic->ic_dfs_non_occupancy_timer);
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -1388,26 +1388,10 @@
+ 			return -EOPNOTSUPP;
+ 		if (rrq->flags != IW_TXPOW_DBM)
+ 			return -EINVAL;
+-		if (ic->ic_bsschan != IEEE80211_CHAN_ANYC) {
+-			if ((ic->ic_bsschan->ic_maxregpower >= rrq->value) &&
+-			    (ic->ic_txpowlimit/2 >= rrq->value)) {
+-				vap->iv_bss->ni_txpower = 2 * rrq->value;
+-				ic->ic_newtxpowlimit = 2 * rrq->value;
+-				ic->ic_flags |= IEEE80211_F_TXPOW_FIXED;
+-			} else
+-				return -EINVAL;
+-		} else {
+-			/*
+-			 * No channel set yet
+-			 */
+-			if (ic->ic_txpowlimit/2 >= rrq->value) {
+-				vap->iv_bss->ni_txpower = 2 * rrq->value;
+-				ic->ic_newtxpowlimit = 2 * rrq->value;
+-				ic->ic_flags |= IEEE80211_F_TXPOW_FIXED;
+-			}
+-			else
+-				return -EINVAL;
+-		}
++
++		vap->iv_bss->ni_txpower = 2 * rrq->value;
++		ic->ic_newtxpowlimit = 2 * rrq->value;
++		ic->ic_flags |= IEEE80211_F_TXPOW_FIXED;
+ 	} else {
+ 		if (!fixed)		/* no change */
+ 			return 0;

@@ -1,0 +1,13 @@
+Index: madwifi-dfs-r3319-20080201/ath/if_ath.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c
+@@ -540,7 +540,7 @@
+ 	HAL_STATUS status;
+ 	int error = 0;
+ 	unsigned int i;
+-	int autocreatemode = IEEE80211_M_STA;
++	int autocreatemode = -1;
+ 	u_int8_t csz;
+ 
+ 	sc->devid = devid;

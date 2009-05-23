@@ -1,0 +1,35 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211.c
+@@ -483,10 +483,13 @@
+ #endif
+ 	if (vap->iv_caps & IEEE80211_C_FF)
+ 		vap->iv_flags |= IEEE80211_F_FF;
++
++#if 0 /* disable bgscan */
+ 	/* NB: Background scanning only makes sense for station mode right now */
+ 	if (ic->ic_opmode == IEEE80211_M_STA &&
+ 	    (vap->iv_caps & IEEE80211_C_BGSCAN))
+ 		vap->iv_flags |= IEEE80211_F_BGSCAN;
++#endif
+ 
+ 	vap->iv_dtim_period = IEEE80211_DTIM_DEFAULT;
+ 	vap->iv_des_chan = IEEE80211_CHAN_ANYC;	/* any channel is OK */
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_scan.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_scan.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_scan.c
+@@ -87,9 +87,9 @@
+  * .5M units).
+  */
+ #define	SCAN_VALID_DEFAULT		60	/* scan cache valid age (secs) */
+-#define	ROAM_RSSI_11A_DEFAULT		24	/* rssi threshold for 11a bss */
+-#define	ROAM_RSSI_11B_DEFAULT		24	/* rssi threshold for 11b bss */
+-#define	ROAM_RSSI_11BONLY_DEFAULT	24	/* rssi threshold for 11b-only bss */
++#define	ROAM_RSSI_11A_DEFAULT		10	/* rssi threshold for 11a bss */
++#define	ROAM_RSSI_11B_DEFAULT		10	/* rssi threshold for 11b bss */
++#define	ROAM_RSSI_11BONLY_DEFAULT	10	/* rssi threshold for 11b-only bss */
+ #define	ROAM_RATE_11A_DEFAULT		2*24	/* tx rate threshold for 11a bss */
+ #define	ROAM_RATE_11B_DEFAULT		2*9	/* tx rate threshold for 11b bss */
+ #define	ROAM_RATE_11BONLY_DEFAULT	2*5	/* tx rate threshold for 11b-only bss */

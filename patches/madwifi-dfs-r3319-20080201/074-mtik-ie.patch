@@ -1,0 +1,506 @@
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211.h
+@@ -778,6 +778,54 @@
+ 	} __packed band[4];			/* up to 4 sub bands */
+ } __packed;
+ 
++
++/**
++ * UBNT added structs
++ **/
++/*
++	Typical scanned mtikie sample:
++		{0xdd, 0x26, \
++		0x00, 0x0c, 0x42, 0x00, 0x00, 0x00, \
++		0x01, 0x1e, 0x04, 0x00, 0x00, 0x00, \
++		0x1f, 0x66, 0x09, 0x02, 0xff, 0x0f, \
++		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++		0xdf, 0x20, \
++		0x01, 0x1e, 0x04, 0x00, 0x00, 0x00, \
++		0x1f, 0x66, 0x09, 0x02, 0xff, 0x0f, \
++		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
++		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
++*/
++struct ieee80211_mtik_ie_data {
++	u_int8_t data1[2]; 			/* unknown yet 0x011e */
++	u_int8_t flags;				/* 4(100) - wds, 1(1) - nstream, 8(1000) - polling, 0 - none */
++	u_int8_t data2[3];			/* unknown yet fill with zero */
++	u_int8_t version[4];			/* little endian version. Use 0x1f660902 */
++	u_int8_t pad1;				/* a kind of padding, 0xff */
++	u_int8_t namelen;			/* length of radio name. Change with caution. 0x0f is safe value */
++	u_int8_t radioname[15];		/* Radio name */
++	u_int8_t pad2[5];			/* unknown. fill with zero */
++} __packed;
++
++struct ieee80211_mtik_ie {
++	u_int8_t	id;		/* IEEE80211_ELEMID_VENDOR */
++	u_int8_t	len;	/* length in bytes */
++	u_int8_t	oui[3];	/* 0x00, 0x50, 0xf2 */
++	u_int8_t	type;	/* OUI type */
++	u_int16_t	version;	/* spec revision */
++	struct ieee80211_mtik_ie_data iedata;
++} __packed;
++
++struct ieee80211_mtik_ie_legacy {
++	u_int8_t	id;		/* mtik ID: 0xdf */
++	u_int8_t	len;	/* length in bytes */
++	struct ieee80211_mtik_ie_data iedata;
++} __packed;
++
++
++
+ #define IEEE80211_CHALLENGE_LEN		128
+ 
+ #define IEEE80211_SUPPCHAN_LEN		26
+@@ -841,6 +889,8 @@
+ #define	WME_PARAM_OUI_SUBTYPE	0x01
+ #define	WME_VERSION		1
+ 
++#define MTIK_OUI		0x420c00 /* 0x00, 0x0c, 0x42 */
++
+ /* WME stream classes */
+ #define	WME_AC_BE	0		/* best effort */
+ #define	WME_AC_BK	1		/* background */
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_beacon.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_beacon.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_beacon.c
+@@ -162,6 +162,11 @@
+ 	if (vap->iv_flags & IEEE80211_F_WPA)
+ 		frm = ieee80211_add_wpa(frm, vap);
+ 
++	/* MTIK IE */
++	if ((vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0) {
++		frm = ieee80211_add_mtik_ie(frm, vap);
++	}
++
+ 	/* athAdvCaps */
+ 	bo->bo_ath_caps = frm;
+ 	if (vap->iv_bss && vap->iv_bss->ni_ath_flags)
+@@ -242,6 +247,8 @@
+ 		 + (ic->ic_ath_cap & IEEE80211_ATHC_XR ?	/* XR */
+ 			sizeof(struct ieee80211_xr_param) : 0)
+ #endif
++		 + ( ((vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0) ?
++				sizeof(struct ieee80211_mtik_ie) : 0 )
+ 		 ;
+ 	skb = ieee80211_getmgtframe(&frm, pktlen);
+ 	if (skb == NULL) {
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_input.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_input.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_input.c
+@@ -1790,6 +1790,13 @@
+ 	return frm[1] > 3 && LE_READ_4(frm+2) == ((ATH_OUI_TYPE<<24)|ATH_OUI);
+ }
+ 
++static int __inline
++ismtikoui(const u_int8_t *frm)
++{
++	return frm[1] > 3 && LE_READ_4(frm+2) == MTIK_OUI;
++}
++
++
+ /*
+  * Convert a WPA cipher selector OUI to an internal
+  * cipher algorithm.  Where appropriate we also
+@@ -3028,6 +3035,7 @@
+ 	struct ieee80211_frame *wh;
+ 	u_int8_t *frm, *efrm;
+ 	u_int8_t *ssid, *rates, *xrates, *suppchan, *wpa, *rsn, *wme, *ath;
++	u_int8_t *mtik;
+ 	u_int8_t rate;
+ 	int reassoc, resp, allocbs = 0;
+ 	u_int8_t qosinfo;
+@@ -3157,6 +3165,8 @@
+ 					scan.wme = frm;
+ 				else if (isatherosoui(frm))
+ 					scan.ath = frm;
++				else if (ismtikoui(frm))
++					scan.mtik = frm;
+ 				break;
+ 			case IEEE80211_ELEMID_CHANSWITCHANN:
+ 				if (ic->ic_flags & IEEE80211_F_DOTH)
+@@ -3403,6 +3413,9 @@
+ 				if (scan.ath != NULL)
+ 					ieee80211_saveath(ni, scan.ath);
+ 
++				if (scan.mtik != NULL)
++					ieee80211_saveie(&ni->ni_mtik_ie, scan.mtik);
++
+ 				/* NB: must be after ni_chan is setup */
+ 				ieee80211_setup_rates(ni, scan.rates,
+ 					scan.xrates, IEEE80211_F_DOSORT);
+@@ -3443,7 +3456,7 @@
+ 		 *	[tlv] extended supported rates
+ 		 *	[tlv] Atheros Advanced Capabilities
+ 		 */
+-		ssid = rates = xrates = ath = NULL;
++		ssid = rates = xrates = ath = mtik = NULL;
+ 		while (frm < efrm) {
+ 			IEEE80211_VERIFY_LENGTH(efrm - frm, frm[1]);
+ 			switch (*frm) {
+@@ -3459,6 +3472,8 @@
+ 			case IEEE80211_ELEMID_VENDOR:
+ 				if (isatherosoui(frm))
+ 					ath = frm;
++				else if (ismtikoui(frm))
++					mtik = frm;
+ 				/* XXX Atheros OUI support */
+ 				break;
+ 			}
+@@ -3520,6 +3535,8 @@
+ 			ieee80211_unref_node(&ni);
+ 		} else if (ath != NULL)
+ 			ieee80211_saveath(ni, ath);
++		else if (mtik != NULL)
++			ieee80211_saveie(&ni->ni_mtik_ie, mtik);
+ 		break;
+ 
+ 	case IEEE80211_FC0_SUBTYPE_AUTH: {
+@@ -3650,7 +3667,7 @@
+ 		frm += 2;
+ 		if (reassoc)
+ 			frm += 6;	/* ignore current AP info */
+-		ssid = rates = xrates = suppchan = wpa = rsn = wme = ath = NULL;
++		ssid = rates = xrates = suppchan = wpa = rsn = wme = ath = mtik = NULL;
+ 		while (frm < efrm) {
+ 			IEEE80211_VERIFY_LENGTH(efrm - frm, frm[1]);
+ 			switch (*frm) {
+@@ -3688,6 +3705,8 @@
+ 					wme = frm;
+ 				else if (isatherosoui(frm))
+ 					ath = frm;
++				else if (ismtikoui(frm))
++					mtik = frm;
+ 				break;
+ 			}
+ 			frm += frm[1] + 2;
+@@ -3843,6 +3862,7 @@
+ 				ni->ni_flags |= IEEE80211_NODE_QOS;
+ 
+ 		ieee80211_saveath(ni, ath);
++		ieee80211_saveie(&ni->ni_mtik_ie, mtik);
+ 
+ 		/* Send Receiver Not Ready (RNR) followed by XID for newly associated stations */
+ 		ieee80211_deliver_l2_rnr(ni);
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_ioctl.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_ioctl.h
+@@ -653,6 +653,7 @@
+ 	IEEE80211_PARAM_DFS_NONOCCUPANCYPERIOD	= 72,	/* DFS no-occupancy limit - how long do we stay
+ 							   off a channel once radar is detected?
+ 							   FCC requires 30m, so that is the default. */
++	IEEE80211_PARAM_ADDMTIKIE		= 73,   /* Add Mikrotik compatible IE */
+ };
+ 
+ #define	SIOCG80211STATS			(SIOCDEVPRIVATE+2)
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_node.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_node.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_node.c
+@@ -729,6 +729,8 @@
+ 		ieee80211_saveie(&ni->ni_wme_ie, se->se_wme_ie);
+ 	if (se->se_ath_ie != NULL)
+ 		ieee80211_saveath(ni, se->se_ath_ie);
++	if (se->se_mtik_ie != NULL)
++		ieee80211_saveie(&ni->ni_mtik_ie, se->se_mtik_ie);
+ 
+ 	vap->iv_dtim_period = se->se_dtimperiod;
+ 	vap->iv_dtim_count = 0;
+@@ -992,6 +994,8 @@
+ 		FREE(ni->ni_wme_ie, M_DEVBUF);
+ 	if (ni->ni_ath_ie != NULL)
+ 		FREE(ni->ni_ath_ie, M_DEVBUF);
++	if (ni->ni_mtik_ie != NULL)
++		FREE(ni->ni_mtik_ie, M_DEVBUF);
+ 	if (ni->ni_suppchans != NULL)
+ 		FREE(ni->ni_suppchans, M_DEVBUF);
+ 	if (ni->ni_suppchans_new != NULL)
+@@ -1498,6 +1502,8 @@
+ 			ieee80211_saveie(&ni->ni_rsn_ie, sp->rsn);
+ 		if (sp->ath != NULL)
+ 			ieee80211_saveath(ni, sp->ath);
++		if (sp->mtik != NULL)
++			ieee80211_saveie(&ni->ni_mtik_ie, sp->mtik);
+ 
+ 		/* NB: must be after ni_chan is setup */
+ 		ieee80211_setup_rates(ni, sp->rates, sp->xrates, IEEE80211_F_DOSORT);
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_node.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_node.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_node.h
+@@ -130,6 +130,7 @@
+ 	u_int8_t *ni_rsn_ie;			/* captured RSN ie */
+ 	u_int8_t *ni_wme_ie;			/* captured WME ie */
+ 	u_int8_t *ni_ath_ie;			/* captured Atheros ie */
++	u_int8_t *ni_mtik_ie;			/* captured Mikrotik ie */
+ 	u_int8_t *ni_suppchans;			/* supported channels */
+ 	u_int8_t *ni_suppchans_new;		/* supported channels of ongoing association */
+ 	u_int8_t *ni_needed_chans;		/* nodes which don't support these will be removed */
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_output.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_output.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_output.c
+@@ -46,6 +46,7 @@
+ #include <linux/skbuff.h>
+ #include <linux/netdevice.h>
+ #include <linux/if_vlan.h>
++#include <linux/utsname.h>
+ 
+ #include <linux/ip.h>			/* XXX for TOS */
+ 
+@@ -723,6 +724,48 @@
+ 	return skb;
+ }
+ 
++u_int8_t*
++ieee80211_add_mtik_ie_common(u_int8_t *frm, struct ieee80211vap *vap, int legacy)
++{
++	static const u_int8_t mtikoui[3] = { 0x00, 0x0c, 0x42 };
++	static const u_int8_t mtikver[4] = { 0x1f, 0x66, 0x09, 0x02 };
++	struct ieee80211_mtik_ie_data* mtikie;
++
++	if (legacy) {
++		/* obsolete mtikie, for backward compatibility */
++		*frm++ = 0xdf;
++		*frm++ = sizeof(struct ieee80211_mtik_ie_data);
++	} else {
++		*frm++ = IEEE80211_ELEMID_VENDOR;
++		*frm++ = sizeof(struct ieee80211_mtik_ie_data) + 6; /* mtik ie + oui + {version, type, subtype} */
++		memcpy(frm, mtikoui, sizeof(mtikoui));
++		frm += sizeof(mtikoui);
++		*frm++ = 0;
++		*frm++ = 0;
++		*frm++ = 0;
++	}
++
++	mtikie = (struct ieee80211_mtik_ie_data*)frm;
++	memset(mtikie, 0, sizeof(struct ieee80211_mtik_ie_data));
++	mtikie->data1[0] = 0x01;
++	mtikie->data1[1] = 0x1e;
++	mtikie->flags = 0;
++	if (vap->iv_flags_ext & IEEE80211_FEXT_WDS)
++		mtikie->flags |= (1 << 2); //4
++#ifdef IEEE80211_FEXT_SPER
++	if (vap->iv_ic->ic_flags_ext & IEEE80211_FEXT_SPER)
++		mtikie->flags |= (1 << 0); //1
++#endif
++	memcpy(mtikie->version, mtikver, sizeof(mtikver));
++	mtikie->pad1 = 0xff;
++	mtikie->namelen = 0x0f;
++	strncpy(mtikie->radioname, utsname()->nodename, mtikie->namelen - 1);
++
++	frm += sizeof(struct ieee80211_mtik_ie_data);
++
++	return frm;
++}
++
+ #define	KEY_UNDEFINED(k)	((k).wk_cipher == &ieee80211_cipher_none)
+ /*
+  * Return the transmit key to use in sending a unicast frame.
+@@ -2017,7 +2060,9 @@
+ 			sizeof(struct ieee80211_ie_wme) +
+ 			sizeof(struct ieee80211_ie_athAdvCap) +
+ 			(vap->iv_opt_ie != NULL ? vap->iv_opt_ie_len : 0) +
+-			vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_REQ].length);
++			vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_REQ].length +
++		    ( ((vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0) ?
++				sizeof(struct ieee80211_mtik_ie) : 0 ));
+ 		if (skb == NULL)
+ 			senderr(ENOMEM, is_tx_nobuf);
+ 
+@@ -2096,6 +2141,10 @@
+ 				vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_REQ].length);
+ 			frm += vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_REQ].length;
+ 		}
++		if ((vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0 &&
++				ni->ni_mtik_ie != NULL) {
++			frm = ieee80211_add_mtik_ie(frm, vap);
++		}
+ 
+ 		skb_trim(skb, frm - skb->data);
+ 
+@@ -2120,7 +2169,9 @@
+ 			2 + (IEEE80211_RATE_MAXSIZE - IEEE80211_RATE_SIZE) +
+ 			sizeof(struct ieee80211_wme_param) +
+ 			(vap->iv_ath_cap ? sizeof(struct ieee80211_ie_athAdvCap):0) +
+-			vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_RESP].length);
++			vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_RESP].length +
++			( ((vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0) ?
++					sizeof(struct ieee80211_mtik_ie) : 0 ));
+ 		if (skb == NULL)
+ 			senderr(ENOMEM, is_tx_nobuf);
+ 
+@@ -2171,6 +2222,11 @@
+ 			frm += vap->app_ie[IEEE80211_APPIE_FRAME_ASSOC_RESP].length;
+ 		}
+ 
++		if ((vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0 &&
++				(ni->ni_mtik_ie != NULL)) {
++			frm = ieee80211_add_mtik_ie(frm, vap);
++		}
++
+ 		skb_trim(skb, frm - skb->data);
+ 		break;
+ 
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_proto.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_proto.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_proto.h
+@@ -293,6 +293,10 @@
+ u_int8_t *ieee80211_add_country(u_int8_t *, struct ieee80211com *);
+ u_int8_t *ieee80211_add_pwrcnstr(u_int8_t *frm, struct ieee80211com *ic);
+ u_int8_t *ieee80211_add_athAdvCap(u_int8_t *, u_int8_t, u_int16_t);
++u_int8_t *ieee80211_add_mtik_ie_common(u_int8_t *frm, struct ieee80211vap *vap, int legacy);
++
++#define ieee80211_add_mtik_ie(f,v) ieee80211_add_mtik_ie_common(f, v, 0)
++#define ieee80211_add_mtik_ie_legacy(f,v) ieee80211_add_mtik_ie_common(f, v, 1)
+ 
+ /*
+  * Notification methods called from the 802.11 state machine.
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_scan.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_scan.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_scan.h
+@@ -144,6 +144,7 @@
+ 	u_int8_t *rsn;
+ 	u_int8_t *wme;
+ 	u_int8_t *ath;
++	u_int8_t *mtik;
+ };
+ 
+ /*
+@@ -174,6 +175,7 @@
+ 	u_int8_t *se_rsn_ie;		/* captured RSN ie */
+ 	u_int8_t *se_wme_ie;		/* captured WME ie */
+ 	u_int8_t *se_ath_ie;		/* captured Atheros ie */
++	u_int8_t *se_mtik_ie;		/* captured Mikrotik ie */
+ 	u_int se_age;			/* age of entry (0 on create) */
+ };
+ 
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_sta.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_scan_sta.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_scan_sta.c
+@@ -291,6 +291,7 @@
+ 	saveie(&ise->se_wpa_ie, sp->wpa);
+ 	saveie(&ise->se_rsn_ie, sp->rsn);
+ 	saveie(&ise->se_ath_ie, sp->ath);
++	saveie(&ise->se_mtik_ie, sp->mtik);
+ 
+ 	/* clear failure count after STA_FAIL_AGE passes */
+ 	if (se->se_fails && (jiffies - se->se_lastfail) > STA_FAILS_AGE*HZ) {
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_var.h
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_var.h
+@@ -588,6 +588,7 @@
+ #define IEEE80211_FEXT_SWBMISS		0x00000400	/* CONF: use software beacon timer */
+ #define IEEE80211_FEXT_DROPUNENC_EAPOL	0x00000800	/* CONF: drop unencrypted eapol frames */
+ #define IEEE80211_FEXT_APPIE_UPDATE	0x00001000	/* STATE: beacon APP IE updated */
++#define IEEE80211_FEXT_ADDMTIKIE	0x20000000	/* STATUS: add microtik compatible IE */
+ 
+ #define IEEE80211_COM_UAPSD_ENABLE(_ic)		((_ic)->ic_flags_ext |= IEEE80211_FEXT_UAPSD)
+ #define IEEE80211_COM_UAPSD_DISABLE(_ic)	((_ic)->ic_flags_ext &= ~IEEE80211_FEXT_UAPSD)
+Index: madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+===================================================================
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_wireless.c
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_wireless.c
+@@ -1997,6 +1997,25 @@
+ 			  return E2BIG;
+ 		}
+ 	}
++	if (se->se_mtik_ie != NULL) {
++		static const char mtik_leader[] = "mtik_ie=";
++
++		memset(&iwe, 0, sizeof(iwe));
++		last_ev = current_ev;
++		iwe.cmd = IWEVCUSTOM;
++		iwe.u.data.length = encode_ie(buf, sizeof(buf),
++			se->se_mtik_ie, se->se_mtik_ie[1] + 2,
++			mtik_leader, sizeof(mtik_leader) - 1);
++		if (iwe.u.data.length != 0) {
++			current_ev = iwe_stream_add_point(current_ev, end_buf,
++				&iwe, buf);
++
++			/* We ran out of space in the buffer. */
++			if (last_ev == current_ev)
++				return E2BIG;
++		}
++	}
++
+ 	req->current_ev = current_ev;
+ 
+ 	return 0;
+@@ -2805,6 +2824,13 @@
+ 		else
+ 			ic->ic_flags_ext &= ~IEEE80211_FEXT_MARKDFS;
+ 		break;
++	case IEEE80211_PARAM_ADDMTIKIE:
++		if (value)
++			vap->iv_flags_ext |= IEEE80211_FEXT_ADDMTIKIE;
++		else
++			vap->iv_flags_ext &= ~IEEE80211_FEXT_ADDMTIKIE;
++		retv = ENETRESET;	/* Renegotiate for capabilities */
++		break;
+ #ifdef ATH_REVERSE_ENGINEERING
+ 	case IEEE80211_PARAM_DUMPREGS:
+ 		ieee80211_dump_registers(dev, info, w, extra);
+@@ -3133,6 +3159,9 @@
+ 		else
+ 			param[0] = 0;
+ 		break;
++	case IEEE80211_PARAM_ADDMTIKIE:
++		param[0] = (vap->iv_flags_ext & IEEE80211_FEXT_ADDMTIKIE) != 0;
++		break;
+ 	default:
+ 		return -EOPNOTSUPP;
+ 	}
+@@ -4142,6 +4171,8 @@
+ 		*ielen += 2 + se->se_wme_ie[1];
+ 	if (se->se_ath_ie != NULL)
+ 		*ielen += 2 + se->se_ath_ie[1];
++	if (se->se_mtik_ie != NULL)
++		*ielen += 2 + se->se_mtik_ie[1];
+ 	return roundup(sizeof(struct ieee80211req_scan_result) +
+ 		se->se_ssid[1] + *ielen, sizeof(u_int32_t));
+ }
+@@ -4210,6 +4241,11 @@
+ 		memcpy(cp, se->se_ath_ie, 2 + se->se_ath_ie[1]);
+ 		cp += 2 + se->se_ath_ie[1];
+ 	}
++	if (se->se_mtik_ie != NULL) {
++		memcpy(cp, se->se_mtik_ie, 2 + se->se_mtik_ie[1]);
++		cp += 2 + se->se_mtik_ie[1];
++	}
++
+ 
+ 	req->space -= len;
+ 	req->sr = (struct ieee80211req_scan_result *)(((u_int8_t *)sr) + len);
+@@ -4287,6 +4323,8 @@
+ 		*ielen += 2+ni->ni_wme_ie[1];
+ 	if (ni->ni_ath_ie != NULL)
+ 		*ielen += 2+ni->ni_ath_ie[1];
++	if (ni->ni_mtik_ie != NULL)
++		*ielen += 2+ni->ni_mtik_ie[1];
+ 	return roundup(sizeof(struct ieee80211req_sta_info) + *ielen,
+ 		      sizeof(u_int32_t));
+ }
+@@ -5598,6 +5636,10 @@
+ 	  0, IW_PRIV_TYPE_APPIEBUF, "getiebuf" },
+ 	{ IEEE80211_IOCTL_FILTERFRAME,
+ 	  IW_PRIV_TYPE_FILTER , 0, "setfilter" },
++	{ IEEE80211_PARAM_ADDMTIKIE,
++	  IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1, 0, "addmtikie" },
++	{ IEEE80211_PARAM_ADDMTIKIE,
++	  0, IW_PRIV_TYPE_INT | IW_PRIV_SIZE_FIXED | 1, "get_addmtikie" },
+ 
+ #ifdef ATH_REVERSE_ENGINEERING
+ 	/*
