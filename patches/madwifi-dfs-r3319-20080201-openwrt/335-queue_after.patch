@@ -1,0 +1,11 @@
+--- madwifi-dfs-r3319-20080201.orig/net80211/ieee80211_power.c	2009-05-22 13:22:04.000000000 +0100
++++ madwifi-dfs-r3319-20080201/net80211/ieee80211_power.c	2009-05-22 13:26:45.000000000 +0100
+@@ -248,7 +248,7 @@
+ 	tail = skb_peek_tail(&ni->ni_savedq);
+ 	if (tail != NULL) {
+ 		age -= M_AGE_GET(tail);
+-		__skb_append(tail, skb, &ni->ni_savedq);
++		__skb_queue_after(&ni->ni_savedq, tail, skb);
+ 	} else
+ 		__skb_queue_head(&ni->ni_savedq, skb);
+ 	M_AGE_SET(skb, age);
