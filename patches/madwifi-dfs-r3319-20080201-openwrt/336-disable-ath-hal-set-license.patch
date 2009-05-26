@@ -1,0 +1,49 @@
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c	2009-05-26 15:55:16.000000000 +0100
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c	2009-05-26 16:01:08.000000000 +0100
+@@ -519,25 +519,6 @@
+ 		} while (0)
+ 
+ 
+-
+-static int _ath_hal_setlicense(struct ath_softc *sc)
+-{
+-	const struct firmware *lic = NULL;
+-	int rv = request_firmware(&lic, "ubnt-license.dat", sc->sc_dev->dev.parent);
+-
+-	printk("req fw = %d\n", rv);
+-
+-	if (rv) {
+-		printk(KERN_INFO "ath_hal: ubnt license upload failed.\n");
+-		return rv;
+-	}
+-	rv = ath_hal_setlicense(lic->data, lic->size);
+-	release_firmware(lic);
+-	printk("set license = %d\n", rv);
+-	return (rv == AH_TRUE) ? 0 : 1;
+-}
+-
+-
+ /* Initialize ath_softc structure */
+ 
+ int
+@@ -584,7 +565,19 @@
+ 	ATH_INIT_TQUEUE(&sc->sc_fataltq,  ath_fatal_tasklet,	dev);
+ 
+ 	/* upload UBNT license to enable bonus hal features */
+-	_ath_hal_setlicense(sc);
++        /*
++         * Disabled to avoid:
++         *
++         *  firmware: requesting ubnt-license.dat
++         *  req_fw = -2
++         *  ath_hal: ubnt license upload failed.
++         *
++         *  Ubiquiti's support claims it's alright:
++         *
++         *  forum.ubnt.com/forum/viewtopic.php
++         *  ?t=1526&sid=85ac022efddfb304545955a3ee1a40ec
++         */
++	/* _ath_hal_setlicense(sc); */
+ 
+ 	/*
+ 	 * Attach the HAL and verify ABI compatibility by checking
