@@ -1,0 +1,47 @@
+diff -ur madwifi-dfs-r3319-20080201.orig/ath/if_ath.c madwifi-dfs-r3319-20080201/ath/if_ath.c
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c	2009-06-17 21:52:41.000000000 +0100
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c	2009-06-17 21:53:17.000000000 +0100
+@@ -1129,6 +1129,13 @@
+ #endif
+ 	sc->sc_invalid = 0;
+ 
++        /*
++         * Disable hardware auto ACK. As described in:
++         *
++         * http://thread.gmane.org/gmane.linux.drivers.madwifi.devel/6160
++         */
++        OS_REG_WRITE(ah, 0x8048, 0x00000002);
++
+ 	if (autocreate) {
+ 		if (!strcmp(autocreate, "none"))
+ 			autocreatemode = -1;
+@@ -2841,6 +2848,14 @@
+ 		ath_grppoll_start(vap, sc->sc_xrpollcount);
+ 	}
+ #endif
++
++        /*
++         * Disable hardware auto ACK. As described in:
++         *
++         * http://thread.gmane.org/gmane.linux.drivers.madwifi.devel/6160
++         */
++        OS_REG_WRITE(ah, 0x8048, 0x00000002);
++
+ 	return 0;
+ }
+ 
+@@ -8284,6 +8299,14 @@
+ 	}
+ 
+ 	ath_tx_txqaddbuf(sc, PASS_NODE(ni), txq, bf, ds, pktlen);
++
++        /*
++         * Stop the hardware waiting for ACKs. As described in:
++         *
++         * http://thread.gmane.org/gmane.linux.drivers.madwifi.devel/6160
++         */
++        flags |= HAL_TXDESC_NOACK;
++
+ 	return 0;
+ #undef MIN
+ }
