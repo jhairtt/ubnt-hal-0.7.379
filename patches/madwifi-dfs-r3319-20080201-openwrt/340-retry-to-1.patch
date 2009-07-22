@@ -1,0 +1,11 @@
+--- src-back/madwifi-dfs-r3319-20080201/ath/if_athvar.h	2009-07-20 20:51:06.000000000 +0100
++++ madwifi-dfs-r3319-20080201/ath/if_athvar.h	2009-07-21 11:57:53.000000000 +0100
+@@ -257,7 +257,7 @@
+ #define	ATH_TXDESC	1		/* number of descriptors per buffer */
+ #endif
+ 
+-#define	ATH_TXMAXTRY	11		/* max number of transmit attempts */
++#define	ATH_TXMAXTRY	1		/* max number of transmit attempts */
+ 
+ /* Compress settings */
+ #define ATH_COMP_THRESHOLD  256         /* no compression for frames

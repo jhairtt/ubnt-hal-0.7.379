@@ -1,12 +1,12 @@
 diff -ur madwifi-dfs-r3319-20080201.orig/ath/if_ath_pci.c madwifi-dfs-r3319-20080201/ath/if_ath_pci.c
---- madwifi-dfs-r3319-20080201.orig/ath/if_ath_pci.c	2009-06-17 20:07:55.000000000 +0100
-+++ madwifi-dfs-r3319-20080201/ath/if_ath_pci.c	2009-06-17 20:07:31.000000000 +0100
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath_pci.c	2009-06-20 23:38:19.000000000 +0100
++++ madwifi-dfs-r3319-20080201/ath/if_ath_pci.c	2009-06-20 23:40:38.000000000 +0100
 @@ -248,7 +248,7 @@
  		goto bad4;
  
  	athname = ath_hal_probe(id->vendor, vdevice);
 -	printk(KERN_INFO "%s: %s: %s: mem=0x%lx, irq=%d\n",
-+	printk(KERN_INFO "%s: %s: %s: mem=0x%lx, irq=%d (MAC ACKs disabled - (WiMo UoE group))\n",
++	printk(KERN_INFO "%s: %s: %s: mem=0x%lx, irq=%d (MAC ACKs (retries) disabled - (WiMo UoE group))\n",
  		dev_info, dev->name, athname ? athname : "Atheros ???", phymem, dev->irq);
  
  	/* ready to process interrupts */

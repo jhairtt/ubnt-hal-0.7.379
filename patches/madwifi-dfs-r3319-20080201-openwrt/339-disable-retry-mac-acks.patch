@@ -1,0 +1,16 @@
+diff -ur madwifi-dfs-r3319-20080201.orig/ath/if_ath.c madwifi-dfs-r3319-20080201/ath/if_ath.c
+--- madwifi-dfs-r3319-20080201.orig/ath/if_ath.c	2009-07-20 20:46:55.000000000 +0100
++++ madwifi-dfs-r3319-20080201/ath/if_ath.c	2009-07-20 20:47:28.000000000 +0100
+@@ -8304,8 +8304,12 @@
+          * Stop the hardware waiting for ACKs. As described in:
+          *
+          * http://thread.gmane.org/gmane.linux.drivers.madwifi.devel/6160
++         *
++         * Do the same as the multicast case.
+          */
+         flags |= HAL_TXDESC_NOACK;
++        sc->sc_stats.ast_tx_noack++;
++        try0 = 1;
+ 
+ 	return 0;
+ #undef MIN
